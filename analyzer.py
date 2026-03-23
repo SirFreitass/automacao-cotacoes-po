@@ -1,0 +1,228 @@
+"""
+analyzer.py
+-----------
+Compara cotações entre fornecedores e valida a PO contra o fornecedor escolhido.
+"""
+
+
+def _normalizar_freight(tipo: str, custo) -> str:
+    """
+    Normaliza o tipo de freight para o padrão ECO:
+    - UPS Account  → mantém (exceção — usa conta UPS da ECO)
+    - ECO Runner   → mantém (coleta feita pela ECO)
+    - Free Delivery → mantém (sem custo de frete)
+    - Qualquer outro com custo incluído → "Supplier Ship"
+      (cria linha de frete automática na PO da ECO)
+    """
+    t = (tipo or "").lower()
+    if "ups" in t:
+        return tipo or ""
+    if "eco runner" in t or "runner" in t or "coleta" in t:
+        return tipo or ""
+    if "free" in t or "no charge" in t or "no freight" in t:
+        return tipo or ""
+    # Tem custo de frete OU tipo indica cobrança pelo fornecedor → Supplier Ship
+    if custo or "prepaid" in t or "add" in t or "include" in t or "ship" in t or "freight" in t:
+        return "Supplier Ship"
+    return tipo or ""
+
+
+def analisar(dados_cotacao: dict, dados_po: dict) -> dict:
+    """
+    Recebe dados extraídos pelo extractor.py e retorna análise completa.
+
+    Retorna:
+    {
+        "ranking_preco": [...],          # Fornecedores ordenados por preço
+        "ranking_prazo": [...],          # Fornecedores ordenados por prazo
+        "melhor_preco": {...},           # Fornecedor com menor preço total
+        "melhor_prazo": {...},           # Fornecedor com menor prazo
+        "alertas_itens": [...],          # Itens com substitutos / similares
+        "alertas_po": [...],             # Divergências PO vs cotação
+        "resumo_fornecedores": [...],    # Tabela completa para Excel
+        "po": {...},                     # Dados da PO
+    }
+    """
+    fornecedores = dados_cotacao.get("fornecedores", [])
+    po = dados_po.get("po", {})
+
+    resultado = {
+        "ranking_preco": [],
+        "ranking_prazo": [],
+        "melhor_preco": None,
+        "melhor_prazo": None,
+        "alertas_itens": [],
+        "alertas_po": [],
+        "resumo_fornecedores": [],
+        "po": po,
+    }
+
+    if not fornecedores:
+        return resultado
+
+    # --- Ranking por preço ---
+    fornecedores_com_preco = [f for f in fornecedores if f.get("preco_total") is not None]
+    ranking_preco = sorted(fornecedores_com_preco, key=lambda f: f["preco_total"])
+    resultado["ranking_preco"] = ranking_preco
+    if ranking_preco:
+        resultado["melhor_preco"] = ranking_preco[0]
+
+    # --- Ranking por prazo ---
+    fornecedores_com_prazo = [f for f in fornecedores if f.get("prazo_entrega_dias") is not None]
+    ranking_prazo = sorted(fornecedores_com_prazo, key=lambda f: f["prazo_entrega_dias"])
+    resultado["ranking_prazo"] = ranking_prazo
+    if ranking_prazo:
+        resultado["melhor_prazo"] = ranking_prazo[0]
+
+    # --- Alertas de itens similares / substitutos ---
+    for forn in fornecedores:
+        for item in forn.get("itens", []):
+            if item.get("item_identico_ao_solicitado") is False:
+                resultado["alertas_itens"].append({
+                    "fornecedor": forn.get("nome"),
+                    "pn": item.get("pn"),
+                    "descricao": item.get("descricao"),
+                    "observacao": item.get("observacao_item"),
+                })
+
+    # --- Resumo para Excel ---
+    melhor_preco_nome = (resultado["melhor_preco"] or {}).get("nome", "")
+    melhor_prazo_nome = (resultado["melhor_prazo"] or {}).get("nome", "")
+
+    for i, forn in enumerate(ranking_preco):
+        posicao_prazo = next(
+            (j + 1 for j, f in enumerate(ranking_prazo) if f.get("nome") == forn.get("nome")),
+            "-"
+        )
+        tem_substituto = any(
+            not item.get("item_identico_ao_solicitado", True)
+            for item in forn.get("itens", [])
+        )
+        resultado["resumo_fornecedores"].append({
+            "posicao_preco": i + 1,
+            "posicao_prazo": posicao_prazo,
+            "nome": forn.get("nome"),
+            "preco_total": forn.get("preco_total"),
+            "moeda": forn.get("moeda", "USD"),
+            "prazo_entrega": forn.get("prazo_entrega"),
+            "prazo_entrega_dias": forn.get("prazo_entrega_dias"),
+            "tipo_freight": _normalizar_freight(forn.get("tipo_freight"), forn.get("custo_freight")),
+            "custo_freight": forn.get("custo_freight"),
+            "forma_pagamento": forn.get("forma_pagamento"),
+            "tem_item_substituto": "SIM" if tem_substituto else "Não",
+            "numero_cotacao": forn.get("numero_cotacao"),
+            "validade_cotacao": forn.get("validade_cotacao"),
+        })
+
+    # --- Validação da PO ---
+    if not po:
+        return resultado
+
+    alertas = resultado["alertas_po"]
+
+    # Identifica o fornecedor escolhido pelo comprador (via comentários da PO)
+    forn_comentario = (po.get("fornecedor_escolhido_comentario") or "").lower().strip()
+
+    if forn_comentario:
+        # Busca o fornecedor escolhido na lista de cotações
+        forn_escolhido = next(
+            (f for f in fornecedores
+             if forn_comentario in (f.get("nome") or "").lower()
+             or (f.get("nome") or "").lower() in forn_comentario),
+            None
+        )
+        if forn_escolhido is None:
+            alertas.append({
+                "tipo": "FORNECEDOR",
+                "severidade": "INFO",
+                "mensagem": (
+                    f"Fornecedor indicado nos comentários da PO ('{po.get('fornecedor_escolhido_comentario')}') "
+                    f"não foi localizado nas cotações recebidas. Verifique se o nome corresponde."
+                ),
+            })
+        else:
+            # Verifica se o escolhido é o de melhor preço
+            melhor = resultado["melhor_preco"]
+            if melhor and forn_escolhido.get("nome") != melhor.get("nome"):
+                preco_escolhido = forn_escolhido.get("preco_total") or 0
+                preco_melhor = melhor.get("preco_total") or 0
+                diferenca = preco_escolhido - preco_melhor
+                pct = (diferenca / preco_melhor * 100) if preco_melhor else 0
+                alertas.append({
+                    "tipo": "FORNECEDOR",
+                    "severidade": "INFO",
+                    "mensagem": (
+                        f"Comprador escolheu '{forn_escolhido.get('nome')}' (${preco_escolhido:,.2f}), "
+                        f"mas o menor preço é de '{melhor.get('nome')}' (${preco_melhor:,.2f}) — "
+                        f"diferença de ${diferenca:,.2f} ({pct:+.1f}%). "
+                        f"Verifique se a escolha está justificada."
+                    ),
+                })
+    else:
+        # Sem fornecedor nos comentários: usa o de melhor preço como referência
+        forn_escolhido = resultado["melhor_preco"]
+
+    # Usa o fornecedor escolhido como referência para validação
+    referencia = forn_escolhido or resultado["melhor_preco"]
+    if not referencia:
+        return resultado
+
+    # Freight: verifica apenas se o fornecedor escolhido cobra freight
+    tipo_freight = _normalizar_freight(
+        referencia.get("tipo_freight"), referencia.get("custo_freight")
+    ).lower()
+    freight_cotacao = referencia.get("custo_freight") or 0
+    freight_po = po.get("custo_freight") or 0
+
+    if "prepaid and add" in tipo_freight and freight_po == 0:
+        alertas.append({
+            "tipo": "FREIGHT",
+            "severidade": "ALERTA",
+            "mensagem": (
+                f"Cotação de '{referencia.get('nome')}' tem freight 'Prepaid and Add' "
+                f"(${freight_cotacao:,.2f}), mas a PO não inclui custo de freight. Verifique!"
+            ),
+        })
+    elif freight_cotacao > 0 and freight_po == 0:
+        alertas.append({
+            "tipo": "FREIGHT",
+            "severidade": "AVISO",
+            "mensagem": (
+                f"Cotação de '{referencia.get('nome')}' inclui freight de ${freight_cotacao:,.2f}, "
+                f"mas não foi identificado freight na PO."
+            ),
+        })
+
+    # Comparação item a item: usa pn_fornecedor como chave primária
+    itens_ref = {}
+    for item in referencia.get("itens", []):
+        pn = (item.get("pn") or "").upper()
+        if pn:
+            itens_ref[pn] = item
+
+    for item_po in po.get("itens", []):
+        # Usa pn_fornecedor (extraído dos parênteses da descrição) como PN primário
+        pn_busca = (item_po.get("pn_fornecedor") or item_po.get("pn") or "").upper()
+        if not pn_busca:
+            continue
+
+        item_ref = itens_ref.get(pn_busca)
+
+        if item_ref is None:
+            # Tenta busca parcial
+            item_ref = next(
+                (v for k, v in itens_ref.items() if pn_busca in k or k in pn_busca),
+                None
+            )
+
+        if item_ref is None:
+            alertas.append({
+                "tipo": "PART NUMBER",
+                "severidade": "ALERTA",
+                "mensagem": (
+                    f"PN '{pn_busca}' da PO não encontrado na cotação de "
+                    f"'{referencia.get('nome')}'. Verifique se o item está correto."
+                ),
+            })
+
+    return resultado

@@ -55,6 +55,21 @@ def _numero_cotacao(analise: dict) -> str:
     return ""
 
 
+def _termo_busca_vendor(nome: str) -> str:
+    """
+    Retorna o termo de busca para o autocomplete de vendor no ECO.
+    Usa apenas as primeiras 2 palavras com 3+ caracteres para maximizar
+    as chances de encontrar autocomplete (ex: 'Master Control Systems Inc'
+    → 'Master Control').
+    """
+    if not nome:
+        return ""
+    palavras_sig = [w for w in nome.split() if len(w) >= 3]
+    if not palavras_sig:
+        return nome
+    return " ".join(palavras_sig[:2])
+
+
 def _carregar_vessels() -> dict:
     """
     Lê a planilha 'Brazil Vessels - GL CODE.xlsx' e retorna
@@ -410,10 +425,13 @@ async def _criar_po_par(page, par: dict, vessels: dict, confirmar, escolher, ven
 
             vendor_input = page.locator("req-vendor input").first
             await vendor_input.wait_for(state="visible", timeout=TIMEOUT)
+            # Usa termo reduzido (primeiras 2 palavras sig.) para o autocomplete ECO.
+            # O nome completo é usado como chave do vendor_map para persistência.
+            termo_busca = _termo_busca_vendor(fornecedor_eco_item)
             # press_sequentially digita char a char, acionando o autocomplete Angular
             await vendor_input.click()
             await vendor_input.press("Control+a")
-            await vendor_input.press_sequentially(fornecedor_eco_item, delay=80)
+            await vendor_input.press_sequentially(termo_busca, delay=80)
 
             # ── J. Aguardar e selecionar autocomplete ────────────────────
             chave_forn = fornecedor_eco_item.lower().strip()
@@ -634,27 +652,38 @@ async def _criar_po_par(page, par: dict, vessels: dict, confirmar, escolher, ven
                     pass  # pula, não bloqueia
                 else:
                     try:
-                        # Tenta como native select primeiro
-                        sv_native = page.locator("select").filter(
-                            has=page.locator("xpath=..//*[contains(text(),'Ship VIA')]")
-                        )
-                        await sv_native.first.select_option(label=ship_via_alvo, timeout=2000)
-                    except Exception:
-                        try:
-                            # Fallback: mat-select (Angular Material) — clica e escolhe mat-option
-                            # Localiza o mat-select dentro do mat-form-field que contém "Ship VIA"
-                            sv_field = page.locator("mat-form-field").filter(
-                                has=page.locator("label, mat-label, span", has_text="Ship VIA")
-                            ).first
-                            sv_trigger = sv_field.locator("mat-select, .mat-select-trigger").first
-                            await sv_trigger.wait_for(state="visible", timeout=3000)
-                            await sv_trigger.click()
-                            await page.wait_for_timeout(500)
-                            # Aguarda painel de opções e clica na correta
-                            opt = page.locator("mat-option", has_text=ship_via_alvo).first
+                        # 1ª tentativa: get_by_label (mais robusto, independe de estrutura)
+                        sv = page.get_by_label("Ship VIA", exact=False)
+                        await sv.wait_for(state="visible", timeout=2000)
+                        tag = await sv.evaluate("el => el.tagName.toLowerCase()")
+                        if tag == "select":
+                            await sv.select_option(label=ship_via_alvo)
+                        else:
+                            # mat-select: clica no trigger e escolhe mat-option
+                            await sv.click()
+                            await page.wait_for_timeout(400)
+                            opt = page.locator("mat-option").filter(has_text=ship_via_alvo).first
                             await opt.wait_for(state="visible", timeout=3000)
                             await opt.click()
-                            await page.wait_for_timeout(500)
+                        await page.wait_for_timeout(400)
+                    except Exception:
+                        try:
+                            # Fallback: mat-form-field com label "Ship VIA"
+                            sv_field = page.locator("mat-form-field").filter(
+                                has=page.locator("mat-label, label", has_text="Ship VIA")
+                            ).first
+                            sv_trigger = sv_field.locator("mat-select, select").first
+                            await sv_trigger.wait_for(state="visible", timeout=3000)
+                            tag2 = await sv_trigger.evaluate("el => el.tagName.toLowerCase()")
+                            if tag2 == "select":
+                                await sv_trigger.select_option(label=ship_via_alvo)
+                            else:
+                                await sv_trigger.click()
+                                await page.wait_for_timeout(400)
+                                opt2 = page.locator("mat-option").filter(has_text=ship_via_alvo).first
+                                await opt2.wait_for(state="visible", timeout=3000)
+                                await opt2.click()
+                            await page.wait_for_timeout(400)
                         except Exception as _sv_err:
                             await _ok(confirmar,
                                       f"PO {numero_po} — L3: Ship VIA não preenchido",

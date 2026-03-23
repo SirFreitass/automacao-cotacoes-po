@@ -14,7 +14,7 @@ from datetime import datetime
 from openpyxl import Workbook, load_workbook
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 from openpyxl.utils import get_column_letter
-from config import ROBO_PLANILHA
+from config import ROBO_PLANILHA, SHIP_VIA_MAP
 
 
 # --- Lookup de fornecedores via Tabela Forn do Req-o-matic ---
@@ -774,16 +774,18 @@ def _aba_robo_consolidada(wb, lote):
     """
     ws = wb.create_sheet("ROBO")
 
-    # Cabeçalho — cols A-S espelham pos do Req-o-matic; col T é status de análise
+    # Cabeçalho — cols A-S espelham pos do Req-o-matic; col T = status; col U = Qty; col V = Ship VIA
     colunas = [
         "Quotation Code", "Produto", "Description", "Unit Price",
         "Cost Center Desc", "Supplier", "Freight", "Status", "OBS",
         "ID+QUOTE", "ECO REQ", "Quote+PO", "Coluna3", "Coluna4",
         "Observação PO", "Forn. Extraido", "Forn Extraído ECO", "PO", "Coluna5",
-        "Análise",  # col T — status de divergência (NÃO colar no Req-o-matic)
+        "Análise",       # col T — status de divergência (NÃO colar no Req-o-matic)
+        "Qty (PO)",      # col U — quantidade da PO para conferência com ECO REQ
+        "Ship VIA (ECO)",# col V — opção Ship VIA a selecionar no ECO (vermelho = preencher manualmente)
     ]
     for col, titulo in enumerate(colunas, 1):
-        cor_cab = "9C0006" if col == 20 else "1F3864"
+        cor_cab = "9C0006" if col == 20 else ("FF6600" if col in (21, 22) else "1F3864")
         c = ws.cell(row=1, column=col, value=titulo)
         c.font = Font(bold=True, color="FFFFFF", size=10)
         c.fill = PatternFill("solid", fgColor=cor_cab)
@@ -825,8 +827,11 @@ def _aba_robo_consolidada(wb, lote):
         }
 
         # Linha separadora entre pares (exceto antes do primeiro)
+        tipo_freight    = (melhor.get("tipo_freight") or "").strip()
+        ship_via_eco    = SHIP_VIA_MAP.get(tipo_freight.lower())
+
         if i > 0:
-            ws.merge_cells(f"A{linha_atual}:T{linha_atual}")
+            ws.merge_cells(f"A{linha_atual}:V{linha_atual}")
             sep = ws.cell(row=linha_atual, column=1,
                           value=f"— PO {numero_po}  |  REQ {eco_req}  |  Cotação {numero_cot} —")
             sep.font = Font(bold=True, color="FFFFFF", size=9)
@@ -841,6 +846,7 @@ def _aba_robo_consolidada(wb, lote):
             pn_forn    = item.get("pn_fornecedor") or ""
             descricao  = item.get("descricao") or ""
             preco_unit = item.get("preco_unitario")
+            quantidade = item.get("quantidade")
             id_quote   = f"{pn_interno}{numero_cot}"
             quote_po   = f"{numero_po}{numero_cot}"
             coluna5    = f"PO:{numero_po} - {numero_cot} - {centro_de_custo}"
@@ -851,7 +857,6 @@ def _aba_robo_consolidada(wb, lote):
                 (v for k, v in itens_melhor.items() if busca and (busca in k or k in busca)), None
             )
             divergencias = []
-            # Alertas gerais da PO
             tipos_alerta = {a.get("tipo", "") for a in alertas_po}
             if "PRECO" in tipos_alerta:
                 divergencias.append("Preço divergente")
@@ -861,7 +866,6 @@ def _aba_robo_consolidada(wb, lote):
                 divergencias.append("Freight divergente")
             if "FORNECEDOR" in tipos_alerta or "SUPPLIER" in tipos_alerta:
                 divergencias.append("Fornecedor divergente")
-            # PN não encontrado na cotação vencedora
             if busca and not ref:
                 divergencias.append("PN não encontrado na cotação")
             # Preço do item vs cotação
@@ -873,12 +877,21 @@ def _aba_robo_consolidada(wb, lote):
                             divergencias.append(f"Preço item: PO={preco_unit} / Cot={preco_cot}")
                     except (TypeError, ValueError):
                         pass
+            # Quantidade do item vs cotação vencedora
+            if ref and quantidade is not None:
+                qtd_cot = ref.get("quantidade")
+                if qtd_cot is not None:
+                    try:
+                        if int(float(quantidade)) != int(float(qtd_cot)):
+                            divergencias.append(f"Qty: PO={int(float(quantidade))} / Cot={int(float(qtd_cot))}")
+                    except (TypeError, ValueError):
+                        pass
 
             if divergencias:
                 status_txt = "⚠ " + " | ".join(divergencias)
                 cor_status = COR_ALERTA
                 cor_font_status = COR_ALERTA_FONT
-                cor_linha = COR_ALERTA  # linha inteira em vermelho claro
+                cor_linha = COR_ALERTA
             else:
                 status_txt = "✓ OK"
                 cor_status = COR_MELHOR
@@ -897,19 +910,34 @@ def _aba_robo_consolidada(wb, lote):
                 fmt = '"$"#,##0.0000' if col == 4 else None
                 _celula(ws, linha_atual, col, val, cf, formato=fmt)
 
-            # Col T — status (destaque independente)
+            # Col T — status de análise
             _celula(ws, linha_atual, 20, status_txt,
                     cor_status, negrito=True, cor_fonte=cor_font_status)
+
+            # Col U — quantidade da PO (laranja se divergente)
+            cor_qty = COR_ALERTA if any("Qty" in d for d in divergencias) else cor_linha
+            _celula(ws, linha_atual, 21, quantidade, cor_qty, alinhamento="center")
+
+            # Col V — Ship VIA (verde se mapeado, vermelho se precisar preencher manualmente)
+            if ship_via_eco:
+                _celula(ws, linha_atual, 22, ship_via_eco, COR_MELHOR,
+                        cor_fonte=COR_MELHOR_FONT, alinhamento="center")
+            else:
+                txt_manual = f"(manual — {tipo_freight})" if tipo_freight else "(manual)"
+                _celula(ws, linha_atual, 22, txt_manual, COR_ALERTA,
+                        negrito=True, cor_fonte=COR_ALERTA_FONT, alinhamento="center")
 
             ws.row_dimensions[linha_atual].height = 18
             linha_atual += 1
 
-    # Larguras fixas espelhando a aba pos do Req-o-matic + col T
+    # Larguras fixas espelhando a aba pos do Req-o-matic + cols T e U
     larguras = {
         "A": 16, "B": 14, "C": 45, "D": 14, "E": 20, "F": 28,
         "G": 16, "H": 14, "I": 35, "J": 28, "K": 18, "L": 28,
         "M": 10, "N": 10, "O": 45, "P": 25, "Q": 25, "R": 12, "S": 40,
-        "T": 35,  # Análise — não colar no Req-o-matic
+        "T": 35,   # Análise
+        "U": 10,   # Qty (PO)
+        "V": 22,   # Ship VIA (ECO)
     }
     for col_letter, w in larguras.items():
         ws.column_dimensions[col_letter].width = w

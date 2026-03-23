@@ -3,6 +3,12 @@ analyzer.py
 -----------
 Compara cotações entre fornecedores e valida a PO contra o fornecedor escolhido.
 """
+import re
+
+
+def _norm_pn(pn: str) -> str:
+    """Normaliza PN removendo separadores para comparação robusta."""
+    return re.sub(r'[^A-Z0-9]', '', (pn or "").upper())
 
 
 def _normalizar_freight(tipo: str, custo) -> str:
@@ -199,6 +205,8 @@ def analisar(dados_cotacao: dict, dados_po: dict) -> dict:
         pn = (item.get("pn") or "").upper()
         if pn:
             itens_ref[pn] = item
+    # Índice normalizado (sem hífens/espaços) para match robusto
+    itens_ref_norm = {_norm_pn(k): v for k, v in itens_ref.items()}
 
     for item_po in po.get("itens", []):
         # Usa pn_fornecedor (extraído dos parênteses da descrição) como PN primário
@@ -206,14 +214,15 @@ def analisar(dados_cotacao: dict, dados_po: dict) -> dict:
         if not pn_busca:
             continue
 
-        item_ref = itens_ref.get(pn_busca)
+        pn_busca_norm = _norm_pn(pn_busca)
 
-        if item_ref is None:
-            # Tenta busca parcial
-            item_ref = next(
-                (v for k, v in itens_ref.items() if pn_busca in k or k in pn_busca),
-                None
-            )
+        item_ref = (
+            itens_ref.get(pn_busca)
+            or next((v for k, v in itens_ref.items() if pn_busca in k or k in pn_busca), None)
+            or (itens_ref_norm.get(pn_busca_norm) if pn_busca_norm else None)
+            or next((v for k, v in itens_ref_norm.items()
+                     if pn_busca_norm and (pn_busca_norm in k or k in pn_busca_norm)), None)
+        )
 
         if item_ref is None:
             alertas.append({

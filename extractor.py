@@ -82,7 +82,8 @@ Retorne SOMENTE o JSON abaixo, sem texto adicional, sem markdown:
         "descricao": "Descrição completa do item",
         "quantidade": 1,
         "preco_unitario": 0.00,
-        "preco_total_item": 0.00
+        "preco_total_item": 0.00,
+        "fornecedor_item": "Nome do fornecedor/fabricante específico para ESTE item, se mencionado nos comentários ou notações individuais do item. Ignorar o fornecedor geral da PO — apenas capturar se houver menção explícita por item. Ex: nota do item diz 'purchasing from Bruce Kay' → 'Bruce Kay'. Se não houver, retornar null."
       }
     ],
     "subtotal": 0.00,

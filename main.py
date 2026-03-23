@@ -134,6 +134,74 @@ def _verificar_api_key():
 
 
 # =====================================================================
+# Diálogo de credenciais ECO Requisition
+# =====================================================================
+
+class DialogCredenciais(tk.Toplevel):
+    """Solicita usuário e senha do ECO Requisition."""
+
+    def __init__(self, parent):
+        super().__init__(parent)
+        self.title("Login — ECO Requisition")
+        self.resizable(False, False)
+        self.configure(bg="white")
+        self.grab_set()
+        self.resultado = None
+        self._usuario = tk.StringVar()
+        self._senha   = tk.StringVar()
+        self._construir()
+        self._centralizar(parent)
+
+    def _centralizar(self, parent):
+        self.update_idletasks()
+        px = parent.winfo_x() + parent.winfo_width()  // 2
+        py = parent.winfo_y() + parent.winfo_height() // 2
+        w, h = self.winfo_width(), self.winfo_height()
+        self.geometry(f"+{px - w // 2}+{py - h // 2}")
+
+    def _construir(self):
+        pad = {"padx": 24, "pady": 6}
+
+        tk.Label(self, text="Credenciais do ECO Requisition",
+                 font=("Segoe UI", 11, "bold"), bg="white",
+                 fg="#1F3864").pack(pady=(20, 4))
+        tk.Label(self, text="Os dados são usados apenas nesta sessão e não são salvos.",
+                 font=("Segoe UI", 8), bg="white", fg="#888").pack(pady=(0, 12))
+
+        for label, var, show in [("Usuário:", self._usuario, ""),
+                                  ("Senha:",   self._senha,   "•")]:
+            tk.Label(self, text=label, font=("Segoe UI", 9),
+                     bg="white", anchor="w").pack(fill="x", **pad)
+            tk.Entry(self, textvariable=var, show=show,
+                     font=("Segoe UI", 10), relief="solid", bd=1,
+                     width=32).pack(padx=24, pady=(0, 6), ipady=4)
+
+        ttk.Separator(self, orient="horizontal").pack(fill="x", padx=24, pady=12)
+
+        frame = tk.Frame(self, bg="white")
+        frame.pack(pady=(0, 18))
+        tk.Button(frame, text="Cancelar", command=self.destroy,
+                  font=("Segoe UI", 9), bg="#E8E8E8", relief="flat",
+                  cursor="hand2", padx=16, pady=6).pack(side="left", padx=6)
+        tk.Button(frame, text="✓  Entrar e criar POs", command=self._confirmar,
+                  font=("Segoe UI", 9, "bold"), bg="#276221", fg="white",
+                  activebackground="#1a4016", activeforeground="white",
+                  relief="flat", cursor="hand2", padx=16, pady=6).pack(side="left", padx=6)
+
+        self.bind("<Return>", lambda _: self._confirmar())
+
+    def _confirmar(self):
+        u = self._usuario.get().strip()
+        s = self._senha.get()
+        if not u or not s:
+            messagebox.showwarning("Campos obrigatórios",
+                                   "Informe usuário e senha.", parent=self)
+            return
+        self.resultado = (u, s)
+        self.destroy()
+
+
+# =====================================================================
 # Janela principal
 # =====================================================================
 
@@ -144,7 +212,8 @@ class App(tk.Tk):
         self.resizable(False, False)
         self.configure(bg="#1F3864")
 
-        self._fila = []  # Lista de (caminho_cotacao, caminho_po)
+        self._fila = []   # Lista de (caminho_cotacao, caminho_po)
+        self._lote = []   # Resultado da análise — alimenta o Playwright
         self._pasta_saida = tk.StringVar(value=os.path.dirname(os.path.abspath(__file__)))
 
         self._construir_ui()
@@ -188,6 +257,15 @@ class App(tk.Tk):
                   command=self._importar_multiplos,
                   font=("Segoe UI", 9), bg="#2E539E", fg="white",
                   activebackground="#1F3864", activeforeground="white",
+                  relief="flat", cursor="hand2", padx=12, pady=5
+                  ).pack(side="left", padx=4, pady=6)
+
+        ttk.Separator(frame_import, orient="vertical").pack(side="left", fill="y", pady=6)
+
+        tk.Button(frame_import, text="📊  Carregar Excel ROBO",
+                  command=self._carregar_excel_robo,
+                  font=("Segoe UI", 9), bg="#276221", fg="white",
+                  activebackground="#1a4016", activeforeground="white",
                   relief="flat", cursor="hand2", padx=12, pady=5
                   ).pack(side="left", padx=4, pady=6)
 
@@ -270,16 +348,30 @@ class App(tk.Tk):
                  wraplength=520, justify="left", anchor="w"
                  ).pack(fill="x", pady=(0, 12))
 
-        # Botão principal
+        # Botões de ação
+        frame_acoes = tk.Frame(corpo, bg="white")
+        frame_acoes.pack(pady=(0, 4))
+
         self._btn_analisar = tk.Button(
-            corpo, text="  ▶  ANALISAR TODOS",
+            frame_acoes, text="  ▶  ANALISAR TODOS",
             command=self._iniciar_analise,
             font=("Segoe UI", 12, "bold"),
             bg="#1F3864", fg="white",
             activebackground="#2E539E", activeforeground="white",
             relief="flat", cursor="hand2", pady=10, padx=24,
         )
-        self._btn_analisar.pack(pady=(0, 4))
+        self._btn_analisar.pack(side="left", padx=(0, 8))
+
+        self._btn_criar_pos = tk.Button(
+            frame_acoes, text="  🌐  CRIAR POs NO ECO",
+            command=self._iniciar_criacao_pos,
+            font=("Segoe UI", 12, "bold"),
+            bg="#276221", fg="white",
+            activebackground="#1a4016", activeforeground="white",
+            relief="flat", cursor="hand2", pady=10, padx=24,
+            state="disabled",   # habilitado após análise concluída
+        )
+        self._btn_criar_pos.pack(side="left")
 
     # ------------------------------------------------------------------
     # Importação de arquivos
@@ -433,6 +525,145 @@ class App(tk.Tk):
             novo = f"  {i + 1}   {partes[1] if len(partes) > 1 else item}"
             self._listbox.insert("end", novo)
 
+    def _carregar_excel_robo(self):
+        """
+        Carrega a aba ROBO de um Excel gerado anteriormente e reconstrói
+        self._lote no formato esperado pelo eco_playwright, habilitando
+        o botão 'CRIAR POs NO ECO' sem precisar re-executar a análise.
+        """
+        caminho = filedialog.askopenfilename(
+            title="Selecione o arquivo Excel com a aba ROBO",
+            filetypes=[("Excel", "*.xlsx *.xlsm"), ("Todos", "*.*")]
+        )
+        if not caminho:
+            return
+
+        try:
+            from openpyxl import load_workbook
+            wb = load_workbook(caminho, read_only=True, data_only=True)
+
+            if "ROBO" not in wb.sheetnames:
+                messagebox.showerror(
+                    "Aba não encontrada",
+                    "O arquivo selecionado não contém a aba 'ROBO'.\n\n"
+                    "Selecione um arquivo gerado por este programa."
+                )
+                wb.close()
+                return
+
+            ws = wb["ROBO"]
+            # Colunas (1-based → índice 0-based):
+            # A(0)=Quotation Code  B(1)=Produto  C(2)=Description  D(3)=Unit Price
+            # E(4)=Cost Center     F(5)=Supplier  K(10)=ECO REQ
+            # O(14)=Observação PO  P(15)=Forn Extraido  R(17)=PO
+            grupos = {}      # numero_po → dict com dados acumulados
+            ordem_pos = []   # preserva ordem de aparição
+
+            for row in ws.iter_rows(min_row=2, values_only=True):
+                # Linha separadora: col A começa com "—" ou col R está vazia
+                col_a = str(row[0] or "")
+                if col_a.startswith("—"):
+                    continue
+
+                numero_po = str(row[17] or "").strip()   # col R
+                if not numero_po:
+                    continue
+
+                numero_cot   = str(row[0]  or "").strip()   # col A
+                pn_interno   = str(row[1]  or "").strip()   # col B
+                descricao    = str(row[2]  or "").strip()   # col C
+                preco_unit   = row[3]                        # col D (numérico)
+                centro_custo = str(row[4]  or "").strip()   # col E
+                fornec_eco   = str(row[5]  or "").strip()   # col F
+                eco_req      = str(row[10] or "").strip()   # col K
+                observacoes  = str(row[14] or "").strip()   # col O
+                forn_extraid = str(row[15] or "").strip()   # col P
+
+                if numero_po not in grupos:
+                    grupos[numero_po] = {
+                        "numero_po":    numero_po,
+                        "numero_cot":   numero_cot,
+                        "eco_req":      eco_req,
+                        "centro_custo": centro_custo,
+                        "fornec_eco":   fornec_eco,
+                        "forn_extraid": forn_extraid,
+                        "observacoes":  observacoes,
+                        "itens":        [],
+                    }
+                    ordem_pos.append(numero_po)
+
+                if pn_interno or descricao:
+                    try:
+                        preco = float(preco_unit) if preco_unit is not None else None
+                    except (TypeError, ValueError):
+                        preco = None
+                    # col U (índice 20) = Qty (PO) — pode não existir em planilhas antigas
+                    try:
+                        qtd_raw = row[20] if len(row) > 20 else None
+                        qtd = int(float(qtd_raw)) if qtd_raw is not None else None
+                    except (TypeError, ValueError, IndexError):
+                        qtd = None
+                    grupos[numero_po]["itens"].append({
+                        "pn":            pn_interno,
+                        "descricao":     descricao,
+                        "preco_unitario": preco,
+                        "quantidade":    qtd,
+                    })
+
+            wb.close()
+
+            if not grupos:
+                messagebox.showwarning(
+                    "Nenhum dado",
+                    "A aba ROBO não contém linhas com número de PO (col R).\n"
+                    "Verifique se o arquivo correto foi selecionado."
+                )
+                return
+
+            # Reconstrói self._lote no formato que eco_playwright espera
+            lote = []
+            for numero_po in ordem_pos:
+                g = grupos[numero_po]
+                lote.append({
+                    "analise": {
+                        "po": {
+                            "numero_po":                    g["numero_po"],
+                            "numero_eco_req":               g["eco_req"] or None,
+                            "centro_de_custo":              g["centro_custo"] or None,
+                            "fornecedor_escolhido_comentario": g["forn_extraid"] or None,
+                            "observacoes":                  g["observacoes"] or None,
+                            "itens":                        g["itens"],
+                        },
+                        "melhor_preco": {"nome": g["fornec_eco"] or None},
+                        "ranking_preco": (
+                            [{"numero_cotacao": g["numero_cot"]}]
+                            if g["numero_cot"] else []
+                        ),
+                        "alertas_po": [],
+                    },
+                    "req_numero": g["eco_req"] or None,
+                })
+
+            self._lote = lote
+            self._btn_criar_pos.config(state="normal")
+            n = len(lote)
+            self._status.set(
+                f"✓ {n} PO(s) carregada(s) do Excel. "
+                "Clique em 'CRIAR POs NO ECO' para prosseguir."
+            )
+            resumo = "\n".join(
+                f"  • PO {g['numero_po']}  |  Cot {g['numero_cot'] or '—'}"
+                f"  |  {g['fornec_eco'] or '—'}  |  {len(g['itens'])} item(ns)"
+                for g in [grupos[p] for p in ordem_pos]
+            )
+            messagebox.showinfo(
+                "Excel ROBO carregado",
+                f"{n} PO(s) prontas para criação no ECO:\n\n{resumo}"
+            )
+
+        except Exception as exc:
+            messagebox.showerror("Erro ao carregar Excel", str(exc))
+
     def _selecionar_pasta_saida(self):
         pasta = filedialog.askdirectory(title="Selecione a pasta para salvar o Excel")
         if pasta:
@@ -524,6 +755,11 @@ class App(tk.Tk):
         else:
             self._status.set(f"Concluído com erros. {n_err} erro(s).")
 
+        # Habilita botão de criação de POs se houver análises OK
+        if lote:
+            self._lote = lote
+            self._btn_criar_pos.config(state="normal")
+
         resposta = messagebox.askyesno(
             "Análise concluída",
             "\n".join(linhas) + "\n\nDeseja abrir o arquivo Excel?"
@@ -535,6 +771,90 @@ class App(tk.Tk):
         self._btn_analisar.config(state="normal")
         self._status.set(f"Erro: {mensagem}")
         messagebox.showerror("Erro na análise", mensagem)
+
+    # ------------------------------------------------------------------
+    # Criação de POs no ECO Requisition via Playwright
+    # ------------------------------------------------------------------
+
+    def _iniciar_criacao_pos(self):
+        if not self._lote:
+            messagebox.showwarning("Sem análise", "Execute a análise primeiro.")
+            return
+
+        dialogo = DialogCredenciais(self)
+        self.wait_window(dialogo)
+        if not dialogo.resultado:
+            return
+
+        usuario, senha = dialogo.resultado
+        self._btn_criar_pos.config(state="disabled")
+        self._btn_analisar.config(state="disabled")
+        self._status.set("Iniciando automação do ECO Requisition...")
+
+        thread = threading.Thread(
+            target=self._executar_criacao_pos,
+            args=(usuario, senha),
+            daemon=True
+        )
+        thread.start()
+
+    def _executar_criacao_pos(self, usuario: str, senha: str):
+        from eco_playwright import criar_pos
+        import threading
+        from tkinter import simpledialog
+
+        def _bloquear(fn):
+            """Executa fn no thread principal e aguarda o resultado."""
+            evento = threading.Event()
+            resultado = [None]
+            def _wrap():
+                resultado[0] = fn()
+                evento.set()
+            self.after(0, _wrap)
+            evento.wait()
+            return resultado[0]
+
+        def confirmar(titulo: str, mensagem: str) -> bool:
+            return _bloquear(lambda: messagebox.askyesno(titulo, mensagem))
+
+        def escolher(titulo: str, opcoes: list) -> int:
+            """
+            Exibe as opções numeradas e pede ao usuário que digite o número.
+            Retorna o índice 0-based escolhido, ou -1 se cancelar.
+            """
+            lista = "\n".join(f"  [{i+1}] {op}" for i, op in enumerate(opcoes))
+            msg   = f"{lista}\n\nDigite o número da opção desejada:"
+            n = _bloquear(lambda: simpledialog.askinteger(
+                titulo, msg,
+                minvalue=1, maxvalue=len(opcoes)
+            ))
+            return (n - 1) if n is not None else -1
+
+        try:
+            resultados = criar_pos(
+                usuario, senha, self._lote,
+                callback=lambda msg: self.after(0, lambda m=msg: self._status.set(m)),
+                confirmar=confirmar,   # remover para modo autônomo
+                escolher=escolher,     # remover para modo autônomo (usa vendor_map salvo)
+            )
+        except Exception as e:
+            resultados = [{"po": "?", "status": "ERRO", "mensagem": str(e)}]
+        self.after(0, lambda: self._concluir_pos(resultados))
+
+    def _concluir_pos(self, resultados: list):
+        self._btn_criar_pos.config(state="normal")
+        self._btn_analisar.config(state="normal")
+
+        ok   = [r for r in resultados if r.get("status") == "OK"]
+        erros = [r for r in resultados if r.get("status") != "OK"]
+
+        linhas = [f"✓ Criação de POs concluída — {len(ok)} OK, {len(erros)} erro(s).\n"]
+        for r in resultados:
+            icone = "✓" if r.get("status") == "OK" else "✗"
+            linhas.append(f"  {icone}  PO {r.get('po')}: {r.get('mensagem')}")
+
+        self._status.set(f"ECO: {len(ok)} PO(s) criada(s), {len(erros)} erro(s).")
+        messagebox.showinfo("Criação de POs", "\n".join(linhas))
 
 
 # =====================================================================

@@ -17,6 +17,9 @@ GEMINI_MODEL = "gemini-2.5-flash"
 # Ajuste se a planilha estiver em outro local
 ROBO_PLANILHA = r"C:\Users\freit\Automação - Analise de Cotações + PO\Req-o-matic v3.6.94 - POs.xlsm"
 
+# Planilha de GL Codes por embarcação (Brazil Vessels - GL CODE.xlsx)
+GL_CODE_PLANILHA = r"C:\Users\freit\Automação - Analise de Cotações + PO\Brazil Vessels - GL CODE.xlsx"
+
 # Tipos de freight reconhecidos
 FREIGHT_TYPES = [
     "Prepaid and Add",
@@ -24,3 +27,11 @@ FREIGHT_TYPES = [
     "ECO Runner",
     "UPS Account",
 ]
+
+# Mapeamento de tipo_freight (cotação) → opção "Ship VIA" no ECO Requisition
+SHIP_VIA_MAP = {
+    "prepaid and add": "Supplier Ship",
+    "free delivery":   "Free delivery",
+    "eco runner":      "Runner Pick up",
+    "ups account":     "ECO UPS ACCT# 707185",
+}

@@ -179,7 +179,8 @@ async def _criar_po_par(page, par: dict, vessels: dict, confirmar, escolher, ven
     numero_po     = po_data.get("numero_po") or "?"
     centro_custo  = (po_data.get("centro_de_custo") or po_data.get("solicitante") or "").strip()
     forn_extraido = (po_data.get("fornecedor_escolhido_comentario") or "").strip()
-    fornecedor_eco = forn_extraido or melhor.get("nome") or ""
+    # NÃO usar melhor.get("nome") — pode ser fornecedor diferente do item atual
+    fornecedor_eco = forn_extraido or ""
     itens_po      = po_data.get("itens") or []
 
     if not numero_cot:
@@ -206,9 +207,10 @@ async def _criar_po_par(page, par: dict, vessels: dict, confirmar, escolher, ven
         await page.wait_for_timeout(1500)
 
         # ── C. Preencher campo de busca ──────────────────────────────────
-        # Garante o formato XXXX.XXXXXX — insere ponto na posição 4 se ausente
-        # (o Gemini às vezes extrai sem o ponto, ex: "2025039982" → "2025.039982")
-        if "." not in numero_cot and len(numero_cot) > 4:
+        # Garante o formato XXXX.XXXXXX — insere ponto na posição 4 SOMENTE
+        # para números de exatamente 10 dígitos (ex: "2025039982" → "2025.039982").
+        # Outros formatos (ex: ECO REQ com 7 dígitos) são usados como estão.
+        if "." not in numero_cot and len(numero_cot) == 10 and numero_cot.isdigit():
             numero_busca = numero_cot[:4] + "." + numero_cot[4:]
         else:
             numero_busca = numero_cot
@@ -378,12 +380,32 @@ async def _criar_po_par(page, par: dict, vessels: dict, confirmar, escolher, ven
 
             await page.wait_for_timeout(1500)
 
+            # ── H2. Identificar item pelo campo Description do formulário ─
+            # Lê a descrição já preenchida no modal para encontrar o item
+            # correspondente em itens_po e usar seu fornecedor_item específico.
+            fornecedor_eco_item = fornecedor_eco  # fallback = vendor geral da PO
+            try:
+                desc_field = page.get_by_label("Description", exact=False).first
+                desc_valor = (await desc_field.input_value()).strip()
+                if desc_valor:
+                    desc_norm = desc_valor.lower()
+                    for it in itens_po:
+                        desc_it = (it.get("descricao") or "").lower()
+                        pn_it   = (it.get("pn_fornecedor") or it.get("pn") or "").lower()
+                        if (desc_it and desc_it[:30] in desc_norm) or (pn_it and pn_it in desc_norm):
+                            forn_it = (it.get("fornecedor_item") or "").strip()
+                            if forn_it:
+                                fornecedor_eco_item = forn_it
+                            break
+            except Exception:
+                pass  # usa fornecedor_eco_item = fornecedor_eco
+
             # ── I. Preencher fornecedor ──────────────────────────────────
             if not await _ok(confirmar,
                              f"PO {numero_po} — I: Campo fornecedor",
                              f"Vai localizar o campo de fornecedor:\n"
                              f"Seletor: 'req-vendor input' (primeiro)\n\n"
-                             f"e digitar caractere a caractere: '{fornecedor_eco}'\n\nProsseguir?"):
+                             f"e digitar caractere a caractere: '{fornecedor_eco_item}'\n\nProsseguir?"):
                 continue
 
             vendor_input = page.locator("req-vendor input").first
@@ -391,10 +413,10 @@ async def _criar_po_par(page, par: dict, vessels: dict, confirmar, escolher, ven
             # press_sequentially digita char a char, acionando o autocomplete Angular
             await vendor_input.click()
             await vendor_input.press("Control+a")
-            await vendor_input.press_sequentially(fornecedor_eco, delay=80)
+            await vendor_input.press_sequentially(fornecedor_eco_item, delay=80)
 
             # ── J. Aguardar e selecionar autocomplete ────────────────────
-            chave_forn = fornecedor_eco.lower().strip()
+            chave_forn = fornecedor_eco_item.lower().strip()
             try:
                 await page.wait_for_selector(
                     "mat-option[role='option']", timeout=SHORT_WAIT
@@ -418,7 +440,7 @@ async def _criar_po_par(page, par: dict, vessels: dict, confirmar, escolher, ven
                         idx_escolhido = opcoes_txt.index(opcao_salva)
                         await _ok(confirmar,
                                   f"PO {numero_po} — J: Fornecedor (memória)",
-                                  f"Usando seleção salva para '{fornecedor_eco}':\n\n"
+                                  f"Usando seleção salva para '{fornecedor_eco_item}':\n\n"
                                   f"  [{idx_escolhido+1}] {opcao_salva}\n\n"
                                   "Clique OK para confirmar.")
                     elif n_opts == 1:
@@ -456,7 +478,7 @@ async def _criar_po_par(page, par: dict, vessels: dict, confirmar, escolher, ven
             except PWTimeout:
                 await _ok(confirmar,
                           f"PO {numero_po} — J: Autocomplete não apareceu",
-                          f"Timeout aguardando sugestões para '{fornecedor_eco}'.\n"
+                          f"Timeout aguardando sugestões para '{fornecedor_eco_item}'.\n"
                           "O nome pode estar incorreto ou não cadastrado.\n\n"
                           "Clique OK para continuar sem selecionar.")
 
@@ -652,7 +674,7 @@ async def _criar_po_par(page, par: dict, vessels: dict, confirmar, escolher, ven
                           "Preencha manualmente no navegador e clique OK para continuar.")
 
             # ── M. Confirmar e submeter ──────────────────────────────────
-            vendor_atual = fornecedor_eco
+            vendor_atual = fornecedor_eco_item
             try:
                 if vendor_input is not None:
                     vendor_atual = await vendor_input.input_value()

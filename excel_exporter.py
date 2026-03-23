@@ -10,11 +10,17 @@ Estrutura:
 """
 
 import os
+import re
 from datetime import datetime
 from openpyxl import Workbook, load_workbook
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 from openpyxl.utils import get_column_letter
 from config import ROBO_PLANILHA, SHIP_VIA_MAP
+
+
+def _norm_pn(pn: str) -> str:
+    """Normaliza PN: remove separadores (hífen, espaço, ponto) para comparação robusta."""
+    return re.sub(r'[^A-Z0-9]', '', (pn or "").upper())
 
 
 # --- Lookup de fornecedores via Tabela Forn do Req-o-matic ---
@@ -40,25 +46,42 @@ def _carregar_tabela_forn():
         pass  # Se o arquivo não estiver acessível, segue sem lookup
 
 
+def _palavras_sig(s: str):
+    """Palavras com 3+ caracteres de uma string (para matching de fornecedor)."""
+    return {w for w in re.split(r'\W+', s.lower()) if len(w) >= 3}
+
+
 def _lookup_fornecedor_eco(nome_extraido: str) -> str:
     """
     Dado o nome extraído dos comentários da PO, retorna o nome do
     fornecedor no sistema ECO (Tabela Forn → NomeSistema).
-    Faz busca parcial case-insensitive.
-    Retorna string vazia se não encontrar.
+    Usa matching por palavras significativas (3+ chars, sobreposição ≥50%).
+    Retorna string vazia se não encontrar match confiável.
     """
     if not nome_extraido:
         return ""
     _carregar_tabela_forn()
     chave = nome_extraido.lower().strip()
-    # Busca exata
+    # 1. Busca exata
     if chave in _TABELA_FORN:
         return _TABELA_FORN[chave]
-    # Busca parcial
+    # 2. Busca por palavras significativas com score ≥ 50%
+    palavras_entrada = _palavras_sig(chave)
+    if not palavras_entrada:
+        return ""
+    melhor_v, melhor_score = "", 0.0
     for k, v in _TABELA_FORN.items():
-        if chave in k or k in chave:
-            return v
-    return ""
+        palavras_k = _palavras_sig(k)
+        if not palavras_k:
+            continue
+        comuns = palavras_entrada & palavras_k
+        if not comuns:
+            continue
+        score = len(comuns) / max(len(palavras_entrada), len(palavras_k))
+        if score > melhor_score:
+            melhor_score = score
+            melhor_v = v
+    return melhor_v if melhor_score >= 0.5 else ""
 
 
 # --- Paleta de cores ---
@@ -808,12 +831,10 @@ def _aba_robo_consolidada(wb, lote):
         centro_de_custo = po.get("centro_de_custo") or po.get("solicitante") or ""
         forn_extraido   = po.get("fornecedor_escolhido_comentario") or ""
         observacoes     = po.get("observacoes") or ""
-        # Prioridade: Tabela Forn → nome extraído dos comentários → vencedor do ranking
-        # Nunca usar fornecedor_selecionado (broker como "Nautical Ventures")
-        fornecedor_eco  = (_lookup_fornecedor_eco(forn_extraido)
-                           or forn_extraido
-                           or melhor.get("nome")
-                           or "")
+        # Prioridade: Tabela Forn → nome extraído dos comentários da PO
+        # NÃO usar melhor.get("nome"): o fornecedor do melhor preço pode ser diferente
+        # do fornecedor real escolhido pelo comprador para cada item
+        fornecedor_eco  = _lookup_fornecedor_eco(forn_extraido) or forn_extraido or ""
         freight_robo    = _normalizar_freight_robo(melhor.get("tipo_freight"), melhor.get("custo_freight"))
         obs_alertas     = "; ".join(
             f"[{a.get('tipo')}] {a.get('mensagem', '')[:60]}"
@@ -825,6 +846,8 @@ def _aba_robo_consolidada(wb, lote):
             (it.get("pn") or "").upper(): it
             for it in melhor.get("itens", []) if it.get("pn")
         }
+        # Índice normalizado (sem hífens/espaços) para match robusto
+        itens_melhor_norm = {_norm_pn(k): v for k, v in itens_melhor.items()}
 
         # Linha separadora entre pares (exceto antes do primeiro)
         tipo_freight    = (melhor.get("tipo_freight") or "").strip()
@@ -847,15 +870,22 @@ def _aba_robo_consolidada(wb, lote):
             descricao  = item.get("descricao") or ""
             preco_unit = item.get("preco_unitario")
             quantidade = item.get("quantidade")
+            # Vendor por item tem prioridade sobre vendor geral da PO
+            forn_item     = (item.get("fornecedor_item") or "").strip()
+            fornecedor_eco_item = _lookup_fornecedor_eco(forn_item) or forn_item or fornecedor_eco
             id_quote   = f"{pn_interno}{numero_cot}"
             quote_po   = f"{numero_po}{numero_cot}"
             coluna5    = f"PO:{numero_po} - {numero_cot} - {centro_de_custo}"
 
             # --- Status de divergência (col T) ---
             busca = (pn_forn or pn_interno).upper()
-            ref = itens_melhor.get(busca) or next(
-                (v for k, v in itens_melhor.items() if busca and (busca in k or k in busca)), None
-            )
+            busca_norm = _norm_pn(busca)
+            ref = (itens_melhor.get(busca)
+                   or next((v for k, v in itens_melhor.items()
+                             if busca and (busca in k or k in busca)), None)
+                   or (itens_melhor_norm.get(busca_norm) if busca_norm else None)
+                   or next((v for k, v in itens_melhor_norm.items()
+                             if busca_norm and (busca_norm in k or k in busca_norm)), None))
             divergencias = []
             tipos_alerta = {a.get("tipo", "") for a in alertas_po}
             if "PRECO" in tipos_alerta:
@@ -900,9 +930,9 @@ def _aba_robo_consolidada(wb, lote):
 
             dados = [
                 numero_cot, pn_interno, descricao, preco_unit,
-                centro_de_custo, fornecedor_eco, freight_robo,
+                centro_de_custo, fornecedor_eco_item, freight_robo,
                 "", obs_alertas, id_quote, eco_req, quote_po,
-                "", "", observacoes, forn_extraido, "", numero_po, coluna5,
+                "", "", observacoes, forn_item or forn_extraido, "", numero_po, coluna5,
             ]
 
             for col, val in enumerate(dados, 1):

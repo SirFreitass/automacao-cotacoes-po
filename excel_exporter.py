@@ -9,6 +9,7 @@ Estrutura:
   Aba "N-Dados"         : dados estruturados para VBA (par N)
 """
 
+import logging
 import os
 import re
 from datetime import datetime
@@ -16,11 +17,9 @@ from openpyxl import Workbook, load_workbook
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 from openpyxl.utils import get_column_letter
 from config import ROBO_PLANILHA, SHIP_VIA_MAP
+from utils import norm_pn as _norm_pn, norm_vendor as _norm_vendor, numero_cotacao as _numero_cotacao, quotation_code as _quotation_code, normalizar_freight_robo as _normalizar_freight_robo
 
-
-def _norm_pn(pn: str) -> str:
-    """Normaliza PN: remove separadores (hífen, espaço, ponto) para comparação robusta."""
-    return re.sub(r'[^A-Z0-9]', '', (pn or "").upper())
+logger = logging.getLogger(__name__)
 
 
 # --- Lookup de fornecedores via Tabela Forn do Req-o-matic ---
@@ -43,7 +42,50 @@ def _carregar_tabela_forn():
                 _TABELA_FORN[str(nome_extraido).lower().strip()] = str(nome_sistema).strip()
         wb.close()
     except Exception:
-        pass  # Se o arquivo não estiver acessível, segue sem lookup
+        logger.warning("Não foi possível carregar Tabela Forn do Req-o-matic: %s", ROBO_PLANILHA)
+
+
+def _carregar_vendor_map_json() -> dict:
+    """Carrega o vendor_map.json para busca nas observações."""
+    try:
+        import json as _json
+        caminho = os.path.join(os.path.dirname(os.path.abspath(__file__)), "vendor_map.json")
+        with open(caminho, "r", encoding="utf-8") as f:
+            return _json.load(f)
+    except Exception:
+        return {}
+
+
+def _buscar_fornecedor_nas_obs(observacoes: str) -> str:
+    """
+    Procura nomes de fornecedores conhecidos dentro do texto das observações da PO.
+    Busca em duas fontes: Tabela Forn (Req-o-matic) e vendor_map.json.
+    Retorna o nome encontrado (prefere o mais longo/específico).
+    """
+    if not observacoes:
+        return ""
+    _carregar_tabela_forn()
+    obs_norm = _norm_vendor(observacoes)
+    melhor_nome = ""
+    melhor_tam = 0
+
+    # 1. Busca na Tabela Forn do Req-o-matic
+    for k, v in _TABELA_FORN.items():
+        k_norm = _norm_vendor(k)
+        if k_norm and len(k_norm) >= 4 and k_norm in obs_norm:
+            if len(k_norm) > melhor_tam:
+                melhor_tam = len(k_norm)
+                melhor_nome = v
+
+    # 2. Busca no vendor_map.json (chave = nome curto, valor = nome ECO completo)
+    for k, v in _carregar_vendor_map_json().items():
+        k_norm = _norm_vendor(k)
+        if k_norm and len(k_norm) >= 4 and k_norm in obs_norm:
+            if len(k_norm) > melhor_tam:
+                melhor_tam = len(k_norm)
+                melhor_nome = v
+
+    return melhor_nome
 
 
 def _palavras_sig(s: str):
@@ -55,18 +97,26 @@ def _lookup_fornecedor_eco(nome_extraido: str) -> str:
     """
     Dado o nome extraído dos comentários da PO, retorna o nome do
     fornecedor no sistema ECO (Tabela Forn → NomeSistema).
-    Usa matching por palavras significativas (3+ chars, sobreposição ≥50%).
-    Retorna string vazia se não encontrar match confiável.
+    Busca em 3 níveis:
+      1. Exata normalizada (sem separadores): "kmar" == "k-mar" == "K MAR"
+      2. Substring normalizada: "kmar" encontra "kmarsupply"
+      3. Palavras significativas com score ≥ 50%
     """
     if not nome_extraido:
         return ""
     _carregar_tabela_forn()
-    chave = nome_extraido.lower().strip()
-    # 1. Busca exata
-    if chave in _TABELA_FORN:
-        return _TABELA_FORN[chave]
-    # 2. Busca por palavras significativas com score ≥ 50%
-    palavras_entrada = _palavras_sig(chave)
+    norm_entrada = _norm_vendor(nome_extraido)
+    # 1. Busca exata normalizada
+    for k, v in _TABELA_FORN.items():
+        if _norm_vendor(k) == norm_entrada:
+            return v
+    # 2. Busca por substring normalizada (entrada contém chave ou vice-versa)
+    for k, v in _TABELA_FORN.items():
+        norm_k = _norm_vendor(k)
+        if norm_k and norm_entrada and (norm_k in norm_entrada or norm_entrada in norm_k):
+            return v
+    # 3. Busca por palavras significativas com score ≥ 50%
+    palavras_entrada = _palavras_sig(nome_extraido.lower().strip())
     if not palavras_entrada:
         return ""
     melhor_v, melhor_score = "", 0.0
@@ -173,7 +223,7 @@ def _aba_indice(wb, lote):
                    or req_numero
                    or "—")
         numero_po = po.get("numero_po") or "—"
-        numero_cot = _numero_cotacao(analise) or "—"
+        numero_cot = _quotation_code(analise) or "—"
 
         cor = COR_LINHA_PAR if i % 2 == 0 else COR_BRANCO
         cor_alerta = COR_ALERTA if n_alertas > 0 else COR_MELHOR
@@ -195,15 +245,6 @@ def _aba_indice(wb, lote):
     for col in range(1, n_cols + 1):
         _auto_largura(ws, col)
     ws.column_dimensions["E"].width = 30
-
-
-def _numero_cotacao(analise):
-    """Pega o número de cotação do primeiro fornecedor que tiver."""
-    for forn in analise.get("ranking_preco", []):
-        nc = forn.get("numero_cotacao")
-        if nc:
-            return nc
-    return None
 
 
 def _req_de_cotacao(analise):
@@ -230,7 +271,7 @@ def _aba_resumo(wb, analise, prefixo):
 
     eco_req = po.get("numero_eco_req") or _req_de_cotacao(analise) or "—"
     numero_po = po.get("numero_po") or "—"
-    numero_cot = _numero_cotacao(analise) or "—"
+    numero_cot = _quotation_code(analise) or "—"
 
     titulo = (f"ANÁLISE DE COTAÇÕES  |  REQ: {eco_req}  |  PO: {numero_po}  "
               f"|  Cotação: {numero_cot}  |  {datetime.now().strftime('%d/%m/%Y')}")
@@ -406,27 +447,6 @@ def _aba_alertas(wb, analise, prefixo):
 # ABA DADOS VBA (por par)
 # =====================================================================
 
-def _normalizar_freight_robo(tipo: str, custo) -> str:
-    """
-    Converte o tipo de freight para o vocabulário do Req-o-matic (pos sheet col G).
-    Mapeamento:
-      UPS Account  → "UPS Account"
-      ECO Runner   → "Runner Pick up"
-      Free/No charge → "Free Delivery"
-      Supplier Ship / com custo → "Supplier Ship"
-    """
-    t = (tipo or "").lower()
-    if "ups" in t:
-        return "UPS Account"
-    if "runner" in t or "eco runner" in t or "coleta" in t:
-        return "Runner Pick up"
-    if "free" in t or "no charge" in t or "no freight" in t:
-        return "Free Delivery"
-    if custo or "prepaid" in t or "add" in t or "include" in t or "ship" in t or "freight" in t:
-        return "Supplier Ship"
-    return tipo or ""
-
-
 def _aba_dados_vba(wb, analise, prefixo):  # mantida para compatibilidade mas não chamada
     ws = wb.create_sheet(f"{prefixo}-Dados")
 
@@ -525,7 +545,7 @@ def _aba_para_robo(wb, analise, prefixo):
 
     eco_req = po.get("numero_eco_req") or _req_de_cotacao(analise) or ""
     # Fallback: se a cotação não trouxe o número, tenta o campo extraído da própria PO
-    numero_cot = _numero_cotacao(analise) or po.get("numero_cotacao_ref") or ""
+    numero_cot = _quotation_code(analise)
     numero_po = po.get("numero_po") or ""
     # Centro de custo: campo extraído da seção "Cost Center Apportionment" da PO
     # Ex: "(0185) C-ADMIRAL - USD 3.500,00" → "C-ADMIRAL"
@@ -533,8 +553,17 @@ def _aba_para_robo(wb, analise, prefixo):
     forn_extraido = po.get("fornecedor_escolhido_comentario") or ""
     observacoes = po.get("observacoes") or ""
 
+    # Fallback em cadeia para encontrar o fornecedor:
+    # 1. fornecedor_escolhido_comentario (Gemini)
+    # 2. Busca de nomes conhecidos nas observações da PO
+    # 3. Fornecedor do melhor preço da cotação
+    if not forn_extraido:
+        forn_extraido = _buscar_fornecedor_nas_obs(observacoes)
+    if not forn_extraido:
+        melhor = analise.get("melhor_preco") or {}
+        forn_extraido = melhor.get("nome") or ""
+
     # Lookup do nome do fornecedor no sistema ECO via Tabela Forn do Req-o-matic
-    # NÃO usa fornecedor_selecionado como fallback — esse campo é o agente/broker (ex: Nautical Ventures)
     fornecedor_eco = _lookup_fornecedor_eco(forn_extraido) or forn_extraido or ""
 
     # Freight normalizado para vocabulário do Req-o-matic
@@ -655,7 +684,7 @@ def _aba_analise(wb, analise, prefixo):
 
     eco_req    = po.get("numero_eco_req") or _req_de_cotacao(analise) or "—"
     numero_po  = po.get("numero_po") or "—"
-    numero_cot = _numero_cotacao(analise) or "—"
+    numero_cot = _quotation_code(analise) or "—"
     n_alertas  = len(alertas)
     cor_titulo = COR_ALERTA if n_alertas else COR_MELHOR
 
@@ -841,14 +870,16 @@ def _aba_robo_consolidada(wb, lote):
         melhor = analise.get("melhor_preco") or {}
 
         eco_req      = po.get("numero_eco_req") or _req_de_cotacao(analise) or ""
-        numero_cot   = _numero_cotacao(analise) or ""
+        numero_cot   = _quotation_code(analise)
         numero_po    = po.get("numero_po") or ""
         centro_de_custo = po.get("centro_de_custo") or po.get("solicitante") or ""
         forn_extraido   = po.get("fornecedor_escolhido_comentario") or ""
         observacoes     = po.get("observacoes") or ""
-        # Prioridade: Tabela Forn → nome extraído dos comentários da PO
-        # NÃO usar melhor.get("nome"): o fornecedor do melhor preço pode ser diferente
-        # do fornecedor real escolhido pelo comprador para cada item
+        # Fallback em cadeia: comentários → observações → melhor preço cotação
+        if not forn_extraido:
+            forn_extraido = _buscar_fornecedor_nas_obs(observacoes)
+        if not forn_extraido:
+            forn_extraido = melhor.get("nome") or ""
         fornecedor_eco  = _lookup_fornecedor_eco(forn_extraido) or forn_extraido or ""
         freight_robo    = _normalizar_freight_robo(melhor.get("tipo_freight"), melhor.get("custo_freight"))
         obs_alertas     = "; ".join(

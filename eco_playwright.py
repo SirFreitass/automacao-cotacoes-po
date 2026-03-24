@@ -14,7 +14,12 @@ import os
 import re
 from playwright.async_api import async_playwright, TimeoutError as PWTimeout
 
+import logging
+
 from config import SHIP_VIA_MAP, GL_CODE_PLANILHA
+from utils import numero_cotacao as _numero_cotacao_util, norm_vendor as _norm_vendor
+
+logger = logging.getLogger(__name__)
 
 ECO_URL         = "https://requisition.chouest.com"
 TIMEOUT         = 30_000
@@ -27,11 +32,17 @@ VENDOR_MAP_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "vend
 # ─────────────────────────────────────────────────────────────────────
 
 def _carregar_vendor_map() -> dict:
-    """Lê o mapa de fornecedores salvo (nome_buscado → texto_opção_ECO)."""
+    """
+    Lê o mapa de fornecedores salvo (chave → texto_opção_ECO).
+    Normaliza as chaves ao carregar para que 'k-mar', 'kmar', 'K-MAR' etc.
+    resultem na mesma entrada.
+    """
     try:
         with open(VENDOR_MAP_FILE, "r", encoding="utf-8") as f:
-            return json.load(f)
+            raw = json.load(f)
+        return {_norm_vendor(k): v for k, v in raw.items()}
     except Exception:
+        logger.warning("Não foi possível carregar vendor_map.json — usando mapa vazio.")
         return {}
 
 
@@ -41,7 +52,7 @@ def _salvar_vendor_map(vendor_map: dict):
         with open(VENDOR_MAP_FILE, "w", encoding="utf-8") as f:
             json.dump(vendor_map, f, ensure_ascii=False, indent=2)
     except Exception:
-        pass
+        logger.warning("Não foi possível salvar vendor_map.json.")
 
 
 # ─────────────────────────────────────────────────────────────────────
@@ -49,11 +60,7 @@ def _salvar_vendor_map(vendor_map: dict):
 # ─────────────────────────────────────────────────────────────────────
 
 def _numero_cotacao(analise: dict) -> str:
-    for forn in analise.get("ranking_preco", []):
-        nc = forn.get("numero_cotacao")
-        if nc:
-            return str(nc)
-    return ""
+    return _numero_cotacao_util(analise) or ""
 
 
 def _termo_busca_vendor(nome: str) -> str:
@@ -98,7 +105,7 @@ def _carregar_vessels() -> dict:
                 col += 3
         wb.close()
     except Exception:
-        pass
+        logger.warning("Não foi possível carregar planilha de GL Codes: %s", GL_CODE_PLANILHA)
     return vessels
 
 
@@ -317,7 +324,7 @@ async def _criar_po_par(page, par: dict, vessels: dict, confirmar, escolher, ven
             await page.keyboard.type(termo_busca, delay=30)
 
             # ── J. Aguardar e selecionar autocomplete ────────────────────
-            chave_forn = fornecedor_eco_item.lower().strip()
+            chave_forn = _norm_vendor(fornecedor_eco_item)
             try:
                 await page.wait_for_selector(
                     "mat-option[role='option']", timeout=SHORT_WAIT

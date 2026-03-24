@@ -6,10 +6,7 @@ Compara cotações entre fornecedores e valida a PO contra o fornecedor escolhid
 import re
 from datetime import date, timedelta
 
-
-def _norm_pn(pn: str) -> str:
-    """Normaliza PN removendo separadores para comparação robusta."""
-    return re.sub(r'[^A-Z0-9]', '', (pn or "").upper())
+from utils import norm_pn as _norm_pn
 
 
 def _parse_data(s) -> date | None:
@@ -45,26 +42,7 @@ def _checar_validade(forn: dict, hoje: date) -> dict:
     }
 
 
-def _normalizar_freight(tipo: str, custo) -> str:
-    """
-    Normaliza o tipo de freight para o padrão ECO:
-    - UPS Account  → mantém (exceção — usa conta UPS da ECO)
-    - ECO Runner   → mantém (coleta feita pela ECO)
-    - Free Delivery → mantém (sem custo de frete)
-    - Qualquer outro com custo incluído → "Supplier Ship"
-      (cria linha de frete automática na PO da ECO)
-    """
-    t = (tipo or "").lower()
-    if "ups" in t:
-        return tipo or ""
-    if "eco runner" in t or "runner" in t or "coleta" in t:
-        return tipo or ""
-    if "free" in t or "no charge" in t or "no freight" in t:
-        return tipo or ""
-    # Tem custo de frete OU tipo indica cobrança pelo fornecedor → Supplier Ship
-    if custo or "prepaid" in t or "add" in t or "include" in t or "ship" in t or "freight" in t:
-        return "Supplier Ship"
-    return tipo or ""
+from utils import normalizar_freight as _normalizar_freight
 
 
 def analisar(dados_cotacao: dict, dados_po: dict) -> dict:

@@ -271,12 +271,22 @@ def _aba_resumo(wb, analise, prefixo):
         alins = ["center", "center", "left", "right", "right", "center", "center",
                  "center", "center", "center", "center", "center", "center", "center"]
 
+        validade_vencida = forn.get("validade_vencida")
+        validade_dias = forn.get("validade_dias_restantes")
+
         for col, (val, fmt, aln) in enumerate(zip(dados, formatos, alins), 1):
             cf = cor_linha
             cf_font = None
             neg = False
             if col == 10 and tem_sub:
                 cf = COR_AVISO; cf_font = COR_AVISO_FONT; neg = True
+            if col == 12:
+                if validade_vencida:
+                    cf = COR_ALERTA; cf_font = COR_ALERTA_FONT; neg = True
+                elif validade_dias is not None and validade_dias <= 7:
+                    cf = COR_AVISO; cf_font = COR_AVISO_FONT; neg = True
+                elif validade_dias is not None:
+                    cf = COR_MELHOR; cf_font = COR_MELHOR_FONT; neg = True
             if col in (13, 14) and val:
                 cf = COR_MELHOR; cf_font = COR_MELHOR_FONT; neg = True
             _celula(ws, linha, col, val, cf, neg, cf_font, fmt, aln)

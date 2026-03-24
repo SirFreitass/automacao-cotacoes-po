@@ -1,0 +1,19 @@
+# Configuração local (contém API key — nunca versionar)
+config.py
+
+# Cache Python
+__pycache__/
+*.pyc
+*.pyo
+
+# Arquivos de saída gerados automaticamente
+Analise_Cotacoes_*.xlsx
+Log_POs_*.txt
+
+# Planilhas grandes de referência (caminhos locais, não versionadas)
+*.xlsm
+Brazil Vessels - GL CODE.xlsx
+
+# Playwright
+node_modules/
+playwright-report/

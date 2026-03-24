@@ -524,7 +524,8 @@ def _aba_para_robo(wb, analise, prefixo):
     alertas_po = analise.get("alertas_po", [])
 
     eco_req = po.get("numero_eco_req") or _req_de_cotacao(analise) or ""
-    numero_cot = _numero_cotacao(analise) or ""
+    # Fallback: se a cotação não trouxe o número, tenta o campo extraído da própria PO
+    numero_cot = _numero_cotacao(analise) or po.get("numero_cotacao_ref") or ""
     numero_po = po.get("numero_po") or ""
     # Centro de custo: campo extraído da seção "Cost Center Apportionment" da PO
     # Ex: "(0185) C-ADMIRAL - USD 3.500,00" → "C-ADMIRAL"
@@ -533,8 +534,8 @@ def _aba_para_robo(wb, analise, prefixo):
     observacoes = po.get("observacoes") or ""
 
     # Lookup do nome do fornecedor no sistema ECO via Tabela Forn do Req-o-matic
-    # Se não encontrar, usa o fornecedor do cabeçalho da PO como fallback
-    fornecedor_eco = _lookup_fornecedor_eco(forn_extraido) or po.get("fornecedor_selecionado") or ""
+    # NÃO usa fornecedor_selecionado como fallback — esse campo é o agente/broker (ex: Nautical Ventures)
+    fornecedor_eco = _lookup_fornecedor_eco(forn_extraido) or forn_extraido or ""
 
     # Freight normalizado para vocabulário do Req-o-matic
     referencia = analise.get("melhor_preco") or {}
@@ -587,17 +588,21 @@ def _aba_para_robo(wb, analise, prefixo):
         descricao = item.get("descricao") or ""
         preco_unit = item.get("preco_unitario")
 
+        # Vendor por item: usa fornecedor_item se disponível, senão usa o vendor geral da PO
+        forn_it = (item.get("fornecedor_item") or "").strip()
+        fornecedor_eco_item = _lookup_fornecedor_eco(forn_it) or forn_it or fornecedor_eco
+
         id_quote = f"{pn_interno}{numero_cot}"
         quote_po = f"{numero_po}{numero_cot}"
         coluna5 = f"PO:{numero_po} - {numero_cot} - {centro_de_custo}"
 
         dados = [
-            numero_cot,       # A  Quotation Code
-            pn_interno,       # B  Produto
-            descricao,        # C  Description
-            preco_unit,       # D  Unit Price
-            centro_de_custo,  # E  Cost Center Desc  (ex: "C-ADMIRAL")
-            fornecedor_eco,   # F  Supplier  (nome ECO via Tabela Forn)
+            numero_cot,           # A  Quotation Code
+            pn_interno,           # B  Produto
+            descricao,            # C  Description
+            preco_unit,           # D  Unit Price
+            centro_de_custo,      # E  Cost Center Desc  (ex: "C-ADMIRAL")
+            fornecedor_eco_item,  # F  Supplier  (por item se disponível, senão PO geral)
             freight_robo,     # G  Freight
             "",               # H  Status (VBA preenche)
             obs_alertas,      # I  OBS

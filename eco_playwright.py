@@ -11,6 +11,7 @@ Parâmetro `confirmar`:
 import asyncio
 import json
 import os
+import re
 from playwright.async_api import async_playwright, TimeoutError as PWTimeout
 
 from config import SHIP_VIA_MAP, GL_CODE_PLANILHA
@@ -453,64 +454,89 @@ async def _criar_po_par(page, par: dict, vessels: dict, confirmar, escolher, ven
 
             if ship_via_alvo:
                 _sv_filled = False
+                _pattern = re.compile(re.escape(ship_via_alvo), re.IGNORECASE)
 
-                # ── Abordagem 1: Kendo UI (ECO Requisition usa Kendo) ────
-                # Localiza kendo-formfield cujo label contenha "Ship VIA",
-                # clica no kendo-dropdownlist e seleciona da lista do popup.
-                if not _sv_filled:
+                # ── Passo 1: abrir o dropdown Ship VIA ──────────────────
+                _sv_opened = False
+
+                # A) select nativo → select_option direto (sem clicar)
+                if not _sv_opened:
+                    try:
+                        sv_sel = page.locator("select").filter(
+                            has=page.locator("option", has_text=_pattern)
+                        ).first
+                        await sv_sel.wait_for(state="visible", timeout=1000)
+                        await sv_sel.select_option(label=ship_via_alvo)
+                        _sv_filled = True
+                        _sv_opened = True
+                    except Exception:
+                        pass
+
+                # B) kendo-formfield com label Ship VIA → clica no kendo-dropdownlist
+                if not _sv_opened:
                     try:
                         sv_field = page.locator("kendo-formfield").filter(
                             has=page.locator("label, kendo-label", has_text="Ship VIA")
                         ).first
-                        sv_btn = sv_field.locator("kendo-dropdownlist").first
-                        await sv_btn.wait_for(state="visible", timeout=2000)
-                        await sv_btn.click()
-                        await page.wait_for_timeout(500)
-                        opt = page.locator("kendo-popup li").filter(has_text=ship_via_alvo).first
-                        await opt.wait_for(state="visible", timeout=3000)
-                        await opt.click()
-                        await page.wait_for_timeout(400)
-                        _sv_filled = True
+                        await sv_field.locator("kendo-dropdownlist").first.click()
+                        _sv_opened = True
                     except Exception:
                         pass
 
-                # ── Abordagem 2: get_by_label → clica e tenta vários tipos de lista ─
-                if not _sv_filled:
+                # C) get_by_label → clica no elemento (ou no pai se for input interno)
+                if not _sv_opened:
                     try:
-                        sv = page.get_by_label("Ship VIA", exact=False).first
-                        await sv.wait_for(state="visible", timeout=2000)
-                        tag = await sv.evaluate("el => el.tagName.toLowerCase()")
+                        sv_el = page.get_by_label("Ship VIA", exact=False).first
+                        await sv_el.wait_for(state="visible", timeout=1500)
+                        tag = await sv_el.evaluate("el => el.tagName.toLowerCase()")
                         if tag == "select":
-                            await sv.select_option(label=ship_via_alvo)
+                            await sv_el.select_option(label=ship_via_alvo)
                             _sv_filled = True
                         else:
-                            # Clica no elemento ou no pai para abrir o dropdown
                             try:
-                                await sv.click()
+                                await sv_el.click()
                             except Exception:
-                                await page.locator("label:has-text('Ship VIA')").locator("xpath=../..").click()
-                            await page.wait_for_timeout(500)
-                            for opt_sel in [
-                                f"kendo-popup li:has-text('{ship_via_alvo}')",
-                                f"ul.k-list-ul li:has-text('{ship_via_alvo}')",
-                                f"mat-option:has-text('{ship_via_alvo}')",
-                                f"li[role='option']:has-text('{ship_via_alvo}')",
-                            ]:
-                                try:
-                                    opt = page.locator(opt_sel).first
-                                    await opt.wait_for(state="visible", timeout=1500)
-                                    await opt.click()
-                                    _sv_filled = True
-                                    break
-                                except Exception:
-                                    continue
+                                # input dentro de kendo → clica no wrapper pai
+                                await sv_el.evaluate("el => el.closest('kendo-dropdownlist, span.k-dropdownlist, div')?.click()")
+                        _sv_opened = True
                     except Exception:
                         pass
+
+                # ── Passo 2: selecionar a opção na lista aberta ─────────
+                if _sv_opened and not _sv_filled:
+                    await page.wait_for_timeout(600)
+                    for opt_sel in [
+                        "li.k-list-item",          # Kendo UI (mais comum)
+                        "kendo-popup li",           # Kendo popup genérico
+                        "ul[role='listbox'] li",    # ARIA listbox
+                        "li[role='option']",        # ARIA option
+                        "mat-option",               # Angular Material fallback
+                    ]:
+                        try:
+                            opt = page.locator(opt_sel).filter(has_text=_pattern).first
+                            await opt.wait_for(state="visible", timeout=2000)
+                            await opt.click()
+                            _sv_filled = True
+                            break
+                        except Exception:
+                            continue
+
+                    # Último recurso: get_by_role("option") — semântico e universal
+                    if not _sv_filled:
+                        try:
+                            opt = page.get_by_role("option", name=re.compile(
+                                re.escape(ship_via_alvo), re.IGNORECASE
+                            )).first
+                            await opt.wait_for(state="visible", timeout=2000)
+                            await opt.click()
+                            _sv_filled = True
+                        except Exception:
+                            pass
 
                 if not _sv_filled:
                     await _ok(confirmar,
                               f"PO {numero_po} — Ship VIA não preenchido",
-                              f"Não foi possível selecionar '{ship_via_alvo}' no campo Ship VIA.\n\n"
+                              f"Não foi possível selecionar '{ship_via_alvo}'.\n\n"
                               "Preencha manualmente e clique OK para continuar.")
                 await page.wait_for_timeout(400)
             else:

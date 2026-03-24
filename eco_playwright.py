@@ -17,7 +17,7 @@ from playwright.async_api import async_playwright, TimeoutError as PWTimeout
 import logging
 
 from config import SHIP_VIA_MAP, GL_CODE_PLANILHA
-from utils import numero_cotacao as _numero_cotacao_util
+from utils import numero_cotacao as _numero_cotacao_util, norm_vendor as _norm_vendor
 
 logger = logging.getLogger(__name__)
 
@@ -32,10 +32,15 @@ VENDOR_MAP_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "vend
 # ─────────────────────────────────────────────────────────────────────
 
 def _carregar_vendor_map() -> dict:
-    """Lê o mapa de fornecedores salvo (nome_buscado → texto_opção_ECO)."""
+    """
+    Lê o mapa de fornecedores salvo (chave → texto_opção_ECO).
+    Normaliza as chaves ao carregar para que 'k-mar', 'kmar', 'K-MAR' etc.
+    resultem na mesma entrada.
+    """
     try:
         with open(VENDOR_MAP_FILE, "r", encoding="utf-8") as f:
-            return json.load(f)
+            raw = json.load(f)
+        return {_norm_vendor(k): v for k, v in raw.items()}
     except Exception:
         logger.warning("Não foi possível carregar vendor_map.json — usando mapa vazio.")
         return {}
@@ -319,7 +324,7 @@ async def _criar_po_par(page, par: dict, vessels: dict, confirmar, escolher, ven
             await page.keyboard.type(termo_busca, delay=30)
 
             # ── J. Aguardar e selecionar autocomplete ────────────────────
-            chave_forn = fornecedor_eco_item.lower().strip()
+            chave_forn = _norm_vendor(fornecedor_eco_item)
             try:
                 await page.wait_for_selector(
                     "mat-option[role='option']", timeout=SHORT_WAIT

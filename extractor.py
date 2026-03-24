@@ -8,6 +8,7 @@ Gratuito até 1.500 requisições/dia. Suporta PDFs digitais e escaneados.
 import json
 import re
 import time
+import pdfplumber
 from google import genai
 from google.genai import types
 from config import GOOGLE_API_KEY, GEMINI_MODEL
@@ -41,7 +42,7 @@ Retorne SOMENTE o JSON abaixo, sem texto adicional, sem markdown:
       "moeda": "USD",
       "prazo_entrega": "Ex: 3-5 business days, In stock, 2 weeks",
       "prazo_entrega_dias": 0,
-      "tipo_freight": "Prepaid and Add | Free Delivery | ECO Runner | UPS Account | outro",
+      "tipo_freight": "OBRIGATÓRIO — classifique em uma destas 4 opções: 'Supplier Ship' (quando há custo de frete, prepaid and add, FOB, freight collect, best way, ground, ou qualquer cobrança de envio), 'Free Delivery' (sem custo de frete, free shipping, no charge, included in price), 'Runner Pick up' (ECO Runner, coleta, pick up pela ECO), 'UPS Account' (UPS, conta UPS da ECO). Se houver custo de frete > 0, SEMPRE use 'Supplier Ship'. Na dúvida, use 'Supplier Ship'.",
       "custo_freight": 0.00,
       "forma_pagamento": "Ex: Net 30, Credit Card, COD",
       "data_cotacao": "Data de emissão da cotação no formato YYYY-MM-DD. Se não houver, null.",
@@ -164,9 +165,59 @@ def extrair_cotacoes(caminho_pdf: str) -> dict:
     return _chamar_gemini(caminho_pdf, PROMPT_COTACAO)
 
 
+def _extrair_quotation_code_pdfplumber(caminho_pdf: str) -> str | None:
+    """
+    Extrai o Quotation Code (formato 20XX.XXXXXX) diretamente do texto do PDF
+    usando pdfplumber. Fallback robusto independente do Gemini.
+    Tenta múltiplos padrões para cobrir variações de formatação.
+    """
+    try:
+        texto_completo = ""
+        with pdfplumber.open(caminho_pdf) as pdf:
+            for page in pdf.pages:
+                texto_completo += (page.extract_text() or "") + "\n"
+
+        if not texto_completo.strip():
+            return None
+
+        # Ano válido: 2024-2029 (evita capturar números como 2032.600687 do ECO REQ)
+        ANO = r'(202[4-9])'
+
+        # 1. Padrão exato: 2026.010070
+        match = re.search(ANO + r'\.(\d{6,})', texto_completo)
+        if match:
+            return f"{match.group(1)}.{match.group(2)}"
+
+        # 2. Com espaços ao redor do ponto: "2026 . 010070"
+        match = re.search(ANO + r'\s*\.\s*(\d{6,})', texto_completo)
+        if match:
+            return f"{match.group(1)}.{match.group(2)}"
+
+        # 3. Sem ponto mas com separação clara: "2026 010070"
+        match = re.search(ANO + r'\s+(\d{6,})', texto_completo)
+        if match:
+            return f"{match.group(1)}.{match.group(2)}"
+
+    except Exception:
+        pass
+    return None
+
+
 def extrair_po(caminho_pdf: str) -> dict:
     """
     Extrai dados da PO do PDF.
     Retorna dict com chave 'po'.
+    Garante que numero_cotacao_ref seja extraído via pdfplumber como fallback.
     """
-    return _chamar_gemini(caminho_pdf, PROMPT_PO)
+    dados = _chamar_gemini(caminho_pdf, PROMPT_PO)
+    po = dados.get("po", {})
+
+    # Se o Gemini não extraiu o quotation code, busca direto no texto do PDF
+    ref = po.get("numero_cotacao_ref")
+    if not ref or not re.match(r'202[4-9]\.\d{6,}', str(ref)):
+        code = _extrair_quotation_code_pdfplumber(caminho_pdf)
+        if code:
+            po["numero_cotacao_ref"] = code
+            dados["po"] = po
+
+    return dados

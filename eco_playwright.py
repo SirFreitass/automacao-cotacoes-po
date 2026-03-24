@@ -452,44 +452,67 @@ async def _criar_po_par(page, par: dict, vessels: dict, confirmar, escolher, ven
             ship_via_alvo  = (melhor.get("ship_via_direto") or "").strip() or SHIP_VIA_MAP.get(tipo_freight.lower())
 
             if ship_via_alvo:
-                try:
-                    # 1ª tentativa: get_by_label (mais robusto, independe de estrutura)
-                    sv = page.get_by_label("Ship VIA", exact=False)
-                    await sv.wait_for(state="visible", timeout=2000)
-                    tag = await sv.evaluate("el => el.tagName.toLowerCase()")
-                    if tag == "select":
-                        await sv.select_option(label=ship_via_alvo)
-                    else:
-                        await sv.click()
-                        await page.wait_for_timeout(400)
-                        opt = page.locator("mat-option").filter(has_text=ship_via_alvo).first
+                _sv_filled = False
+
+                # ── Abordagem 1: Kendo UI (ECO Requisition usa Kendo) ────
+                # Localiza kendo-formfield cujo label contenha "Ship VIA",
+                # clica no kendo-dropdownlist e seleciona da lista do popup.
+                if not _sv_filled:
+                    try:
+                        sv_field = page.locator("kendo-formfield").filter(
+                            has=page.locator("label, kendo-label", has_text="Ship VIA")
+                        ).first
+                        sv_btn = sv_field.locator("kendo-dropdownlist").first
+                        await sv_btn.wait_for(state="visible", timeout=2000)
+                        await sv_btn.click()
+                        await page.wait_for_timeout(500)
+                        opt = page.locator("kendo-popup li").filter(has_text=ship_via_alvo).first
                         await opt.wait_for(state="visible", timeout=3000)
                         await opt.click()
-                    await page.wait_for_timeout(400)
-                except Exception:
-                    try:
-                        # Fallback: mat-form-field com label "Ship VIA"
-                        sv_field = page.locator("mat-form-field").filter(
-                            has=page.locator("mat-label, label", has_text="Ship VIA")
-                        ).first
-                        sv_trigger = sv_field.locator("mat-select, select").first
-                        await sv_trigger.wait_for(state="visible", timeout=3000)
-                        tag2 = await sv_trigger.evaluate("el => el.tagName.toLowerCase()")
-                        if tag2 == "select":
-                            await sv_trigger.select_option(label=ship_via_alvo)
-                        else:
-                            await sv_trigger.click()
-                            await page.wait_for_timeout(400)
-                            opt2 = page.locator("mat-option").filter(has_text=ship_via_alvo).first
-                            await opt2.wait_for(state="visible", timeout=3000)
-                            await opt2.click()
                         await page.wait_for_timeout(400)
-                    except Exception as _sv_err:
-                        await _ok(confirmar,
-                                  f"PO {numero_po} — Ship VIA não preenchido",
-                                  f"Não foi possível selecionar '{ship_via_alvo}'.\n"
-                                  f"Erro: {str(_sv_err)[:120]}\n\n"
-                                  "Preencha manualmente e clique OK para continuar.")
+                        _sv_filled = True
+                    except Exception:
+                        pass
+
+                # ── Abordagem 2: get_by_label → clica e tenta vários tipos de lista ─
+                if not _sv_filled:
+                    try:
+                        sv = page.get_by_label("Ship VIA", exact=False).first
+                        await sv.wait_for(state="visible", timeout=2000)
+                        tag = await sv.evaluate("el => el.tagName.toLowerCase()")
+                        if tag == "select":
+                            await sv.select_option(label=ship_via_alvo)
+                            _sv_filled = True
+                        else:
+                            # Clica no elemento ou no pai para abrir o dropdown
+                            try:
+                                await sv.click()
+                            except Exception:
+                                await page.locator("label:has-text('Ship VIA')").locator("xpath=../..").click()
+                            await page.wait_for_timeout(500)
+                            for opt_sel in [
+                                f"kendo-popup li:has-text('{ship_via_alvo}')",
+                                f"ul.k-list-ul li:has-text('{ship_via_alvo}')",
+                                f"mat-option:has-text('{ship_via_alvo}')",
+                                f"li[role='option']:has-text('{ship_via_alvo}')",
+                            ]:
+                                try:
+                                    opt = page.locator(opt_sel).first
+                                    await opt.wait_for(state="visible", timeout=1500)
+                                    await opt.click()
+                                    _sv_filled = True
+                                    break
+                                except Exception:
+                                    continue
+                    except Exception:
+                        pass
+
+                if not _sv_filled:
+                    await _ok(confirmar,
+                              f"PO {numero_po} — Ship VIA não preenchido",
+                              f"Não foi possível selecionar '{ship_via_alvo}' no campo Ship VIA.\n\n"
+                              "Preencha manualmente e clique OK para continuar.")
+                await page.wait_for_timeout(400)
             else:
                 await _ok(confirmar,
                           f"PO {numero_po} — Ship VIA — preencher manualmente",

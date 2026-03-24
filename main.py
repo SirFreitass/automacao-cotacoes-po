@@ -829,18 +829,26 @@ class App(tk.Tk):
         def confirmar(titulo: str, mensagem: str) -> bool:
             return _bloquear(lambda: messagebox.askyesno(titulo, mensagem))
 
-        def escolher(titulo: str, opcoes: list) -> int:
+        def escolher(titulo: str, opcoes: list):
             """
-            Exibe as opções numeradas e pede ao usuário que digite o número.
-            Retorna o índice 0-based escolhido, ou -1 se cancelar.
+            Exibe as opções numeradas e pede ao usuário que digite o número
+            OU um nome de fornecedor livre.
+            Retorna: int (índice 0-based), str (nome digitado) ou -1 (cancelou).
             """
             lista = "\n".join(f"  [{i+1}] {op}" for i, op in enumerate(opcoes))
-            msg   = f"{lista}\n\nDigite o número da opção desejada:"
-            n = _bloquear(lambda: simpledialog.askinteger(
-                titulo, msg,
-                minvalue=1, maxvalue=len(opcoes)
-            ))
-            return (n - 1) if n is not None else -1
+            msg   = (f"{lista}\n\n"
+                     "Digite o NÚMERO da opção desejada\n"
+                     "ou ESCREVA o nome correto do fornecedor:")
+            resp = _bloquear(lambda: simpledialog.askstring(titulo, msg))
+            if resp is None:
+                return -1
+            resp = resp.strip()
+            if resp.isdigit():
+                n = int(resp)
+                if 1 <= n <= len(opcoes):
+                    return n - 1
+            # Texto livre — retorna como string para o Playwright digitar
+            return resp if resp else -1
 
         try:
             resultados = criar_pos(

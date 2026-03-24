@@ -259,28 +259,37 @@ async def _criar_po_par(page, par: dict, vessels: dict, confirmar, escolher, ven
 
             # ── G. Clicar em Order ───────────────────────────────────────
             await btn.scroll_into_view_if_needed()
-            await page.wait_for_timeout(800)
+            await page.wait_for_timeout(400)
             await btn.click()
-            await page.wait_for_timeout(1000)
+            await page.wait_for_timeout(800)
 
             # ── H. Popup de confirmação (opcional) ───────────────────────
             try:
                 confirm_popup = page.locator("kendo-popup button").first
-                await confirm_popup.wait_for(state="visible", timeout=SHORT_WAIT)
+                await confirm_popup.wait_for(state="visible", timeout=2000)
                 await confirm_popup.click()
-                await page.wait_for_timeout(1000)
+                await page.wait_for_timeout(500)
             except PWTimeout:
                 pass  # sem popup — normal em alguns casos
 
-            await page.wait_for_timeout(1500)
+            await page.wait_for_timeout(800)
 
-            # ── H2. Identificar item pelo campo Description do formulário ─
-            # Lê a descrição já preenchida no modal para encontrar o item
-            # correspondente em itens_po e usar seu fornecedor_item específico.
+            # ── H2. Aguardar formulário pronto e identificar item ──────────
+            # Espera o campo Description ter valor — sinal de que o Angular
+            # terminou de carregar o formulário e conectou os bindings.
             fornecedor_eco_item = fornecedor_eco  # fallback = vendor geral da PO
+            desc_input = page.locator("input[formcontrolname='description']")
             try:
-                desc_field = page.get_by_label("Description", exact=False).first
-                desc_valor = (await desc_field.input_value()).strip()
+                await desc_input.wait_for(state="visible", timeout=TIMEOUT)
+                # Polling: aguarda até o Angular preencher o campo (max ~3s)
+                for _ in range(10):
+                    desc_valor = (await desc_input.input_value()).strip()
+                    if desc_valor:
+                        break
+                    await page.wait_for_timeout(300)
+                else:
+                    desc_valor = ""
+
                 if desc_valor:
                     desc_norm = desc_valor.lower()
                     for it in itens_po:
@@ -295,15 +304,17 @@ async def _criar_po_par(page, par: dict, vessels: dict, confirmar, escolher, ven
                 pass  # usa fornecedor_eco_item = fornecedor_eco
 
             # ── I. Preencher fornecedor ──────────────────────────────────
-            vendor_input = page.locator("req-vendor input").first
+            # Seletor direto confirmado via DevTools (Angular Material autocomplete)
+            vendor_input = page.locator(
+                "input.mat-autocomplete-trigger[role='combobox']"
+            ).first
             await vendor_input.wait_for(state="visible", timeout=TIMEOUT)
-            # Usa termo reduzido (primeiras 2 palavras sig.) para o autocomplete ECO.
-            # O nome completo é usado como chave do vendor_map para persistência.
             termo_busca = _termo_busca_vendor(fornecedor_eco_item)
-            # press_sequentially digita char a char, acionando o autocomplete Angular
+            # Simula ação humana: clique no campo, foca, e começa a digitar
             await vendor_input.click()
-            await vendor_input.press("Control+a")
-            await vendor_input.press_sequentially(termo_busca, delay=40)
+            await vendor_input.focus()
+            await vendor_input.fill("")  # limpa qualquer valor anterior
+            await page.keyboard.type(termo_busca, delay=30)
 
             # ── J. Aguardar e selecionar autocomplete ────────────────────
             chave_forn = fornecedor_eco_item.lower().strip()
@@ -333,12 +344,29 @@ async def _criar_po_par(page, par: dict, vessels: dict, confirmar, escolher, ven
                         idx_escolhido = 0
                     else:
                         # ── CONFIRMAÇÃO 2: múltiplas opções — usuário escolhe ─
-                        idx_escolhido = await _escolher_async(
+                        resposta = await _escolher_async(
                             escolher,
                             f"PO {numero_po} — Selecionar fornecedor '{fornecedor_eco_item}'",
                             opcoes_txt,
                         )
-                        if idx_escolhido >= 0:
+                        if isinstance(resposta, str):
+                            # Texto livre — limpa o campo e digita o nome fornecido
+                            await vendor_input.click()
+                            await vendor_input.press("Control+a")
+                            await vendor_input.press_sequentially(resposta, delay=20)
+                            await page.wait_for_timeout(1000)
+                            # Tenta selecionar a primeira opção do autocomplete
+                            try:
+                                new_opt = page.locator("mat-option[role='option']").first
+                                await new_opt.wait_for(state="visible", timeout=SHORT_WAIT)
+                                await new_opt.click()
+                            except PWTimeout:
+                                pass  # sem sugestões — mantém o texto digitado
+                            vendor_map[chave_forn] = resposta
+                            _salvar_vendor_map(vendor_map)
+                            idx_escolhido = -2  # sinaliza que já foi tratado
+                        elif isinstance(resposta, int) and resposta >= 0:
+                            idx_escolhido = resposta
                             vendor_map[chave_forn] = opcoes_txt[idx_escolhido]
                             _salvar_vendor_map(vendor_map)
 
@@ -456,82 +484,18 @@ async def _criar_po_par(page, par: dict, vessels: dict, confirmar, escolher, ven
                 _sv_filled = False
                 _pattern = re.compile(re.escape(ship_via_alvo), re.IGNORECASE)
 
-                # ── Passo 1: abrir o dropdown Ship VIA ──────────────────
-                _sv_opened = False
-
-                # A) select nativo → select_option direto (sem clicar)
-                if not _sv_opened:
-                    try:
-                        sv_sel = page.locator("select").filter(
-                            has=page.locator("option", has_text=_pattern)
-                        ).first
-                        await sv_sel.wait_for(state="visible", timeout=1000)
-                        await sv_sel.select_option(label=ship_via_alvo)
-                        _sv_filled = True
-                        _sv_opened = True
-                    except Exception:
-                        pass
-
-                # B) kendo-formfield com label Ship VIA → clica no kendo-dropdownlist
-                if not _sv_opened:
-                    try:
-                        sv_field = page.locator("kendo-formfield").filter(
-                            has=page.locator("label, kendo-label", has_text="Ship VIA")
-                        ).first
-                        await sv_field.locator("kendo-dropdownlist").first.click()
-                        _sv_opened = True
-                    except Exception:
-                        pass
-
-                # C) get_by_label → clica no elemento (ou no pai se for input interno)
-                if not _sv_opened:
-                    try:
-                        sv_el = page.get_by_label("Ship VIA", exact=False).first
-                        await sv_el.wait_for(state="visible", timeout=1500)
-                        tag = await sv_el.evaluate("el => el.tagName.toLowerCase()")
-                        if tag == "select":
-                            await sv_el.select_option(label=ship_via_alvo)
-                            _sv_filled = True
-                        else:
-                            try:
-                                await sv_el.click()
-                            except Exception:
-                                # input dentro de kendo → clica no wrapper pai
-                                await sv_el.evaluate("el => el.closest('kendo-dropdownlist, span.k-dropdownlist, div')?.click()")
-                        _sv_opened = True
-                    except Exception:
-                        pass
-
-                # ── Passo 2: selecionar a opção na lista aberta ─────────
-                if _sv_opened and not _sv_filled:
+                # Campo confirmado via DevTools: mat-select[formcontrolname="shipViaId"]
+                try:
+                    sv = page.locator("mat-select[formcontrolname='shipViaId']").first
+                    await sv.wait_for(state="visible", timeout=3000)
+                    await sv.click()
                     await page.wait_for_timeout(600)
-                    for opt_sel in [
-                        "li.k-list-item",          # Kendo UI (mais comum)
-                        "kendo-popup li",           # Kendo popup genérico
-                        "ul[role='listbox'] li",    # ARIA listbox
-                        "li[role='option']",        # ARIA option
-                        "mat-option",               # Angular Material fallback
-                    ]:
-                        try:
-                            opt = page.locator(opt_sel).filter(has_text=_pattern).first
-                            await opt.wait_for(state="visible", timeout=2000)
-                            await opt.click()
-                            _sv_filled = True
-                            break
-                        except Exception:
-                            continue
-
-                    # Último recurso: get_by_role("option") — semântico e universal
-                    if not _sv_filled:
-                        try:
-                            opt = page.get_by_role("option", name=re.compile(
-                                re.escape(ship_via_alvo), re.IGNORECASE
-                            )).first
-                            await opt.wait_for(state="visible", timeout=2000)
-                            await opt.click()
-                            _sv_filled = True
-                        except Exception:
-                            pass
+                    opt = page.locator("mat-option").filter(has_text=_pattern).first
+                    await opt.wait_for(state="visible", timeout=3000)
+                    await opt.click()
+                    _sv_filled = True
+                except Exception:
+                    pass
 
                 if not _sv_filled:
                     await _ok(confirmar,

@@ -578,6 +578,14 @@ class App(tk.Tk):
                 eco_req      = str(row[10] or "").strip()   # col K
                 observacoes  = str(row[14] or "").strip()   # col O
                 forn_extraid = str(row[15] or "").strip()   # col P
+                # col V (índice 21) = Ship VIA preenchido manualmente
+                try:
+                    ship_via = str(row[21] or "").strip() if len(row) > 21 else ""
+                    # Remove prefixo "(manual)" se presente
+                    if ship_via.startswith("(manual"):
+                        ship_via = ""
+                except (IndexError, TypeError):
+                    ship_via = ""
 
                 if numero_po not in grupos:
                     grupos[numero_po] = {
@@ -588,6 +596,7 @@ class App(tk.Tk):
                         "fornec_eco":   fornec_eco,
                         "forn_extraid": forn_extraid,
                         "observacoes":  observacoes,
+                        "ship_via":     ship_via,
                         "itens":        [],
                     }
                     ordem_pos.append(numero_po)
@@ -634,7 +643,10 @@ class App(tk.Tk):
                             "observacoes":                  g["observacoes"] or None,
                             "itens":                        g["itens"],
                         },
-                        "melhor_preco": {"nome": g["fornec_eco"] or None},
+                        "melhor_preco": {
+                            "nome":          g["fornec_eco"] or None,
+                            "ship_via_direto": g["ship_via"] or None,
+                        },
                         "ranking_preco": (
                             [{"numero_cotacao": g["numero_cot"]}]
                             if g["numero_cot"] else []
@@ -845,16 +857,44 @@ class App(tk.Tk):
         self._btn_criar_pos.config(state="normal")
         self._btn_analisar.config(state="normal")
 
-        ok   = [r for r in resultados if r.get("status") == "OK"]
+        ok    = [r for r in resultados if r.get("status") == "OK"]
         erros = [r for r in resultados if r.get("status") != "OK"]
 
-        linhas = [f"✓ Criação de POs concluída — {len(ok)} OK, {len(erros)} erro(s).\n"]
+        from datetime import datetime
+        agora = datetime.now().strftime("%Y%m%d_%H%M%S")
+        linhas_log = [
+            f"LOG DE EMISSÃO DE POs — {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
+            f"Total: {len(resultados)} | OK: {len(ok)} | Erros: {len(erros)}",
+            "=" * 60,
+        ]
+        for r in resultados:
+            icone = "OK" if r.get("status") == "OK" else "ERRO"
+            po_num = r.get("po", "?")
+            msg    = r.get("mensagem", "")
+            po_gerado = r.get("po_gerado", "")
+            linha = f"[{icone}] PO {po_num}"
+            if po_gerado and po_gerado != po_num:
+                linha += f" → {po_gerado}"
+            if msg:
+                linha += f" | {msg}"
+            linhas_log.append(linha)
+
+        # Grava o log na pasta do projeto
+        pasta_log = os.path.dirname(os.path.abspath(__file__))
+        caminho_log = os.path.join(pasta_log, f"Log_POs_{agora}.txt")
+        try:
+            with open(caminho_log, "w", encoding="utf-8") as f:
+                f.write("\n".join(linhas_log))
+            os.startfile(caminho_log)   # abre automaticamente no Bloco de Notas
+        except Exception:
+            pass  # se falhar ao abrir, não bloqueia
+
+        self._status.set(f"ECO: {len(ok)} PO(s) criada(s), {len(erros)} erro(s). Log salvo.")
+        linhas_resumo = [f"✓ Criação de POs concluída — {len(ok)} OK, {len(erros)} erro(s).\n"]
         for r in resultados:
             icone = "✓" if r.get("status") == "OK" else "✗"
-            linhas.append(f"  {icone}  PO {r.get('po')}: {r.get('mensagem')}")
-
-        self._status.set(f"ECO: {len(ok)} PO(s) criada(s), {len(erros)} erro(s).")
-        messagebox.showinfo("Criação de POs", "\n".join(linhas))
+            linhas_resumo.append(f"  {icone}  PO {r.get('po')}: {r.get('mensagem')}")
+        messagebox.showinfo("Criação de POs", "\n".join(linhas_resumo))
 
 
 # =====================================================================

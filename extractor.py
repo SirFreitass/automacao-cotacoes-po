@@ -47,7 +47,7 @@ Retorne SOMENTE o JSON abaixo, sem texto adicional, sem markdown:
       "data_cotacao": "Data de emissão da cotação no formato YYYY-MM-DD. Se não houver, null.",
       "validade_cotacao": "Data de validade no formato YYYY-MM-DD. Se mencionar dias (ex: 'valid for 30 days', 'válido por 30 dias'), calcule somando à data de emissão. Tente sempre retornar uma data concreta no formato YYYY-MM-DD.",
       "validade_dias": 30,
-      "numero_cotacao": "Número da cotação — procure padrões como 2025.XXXXXX ou 2026.XXXXXX (ex: 2025.123456). Se não encontrar este padrão, use o número que aparecer.",
+      "numero_cotacao": "Número da cotação — procure em todo o documento por padrões como 2025.XXXXXX ou 2026.XXXXXX onde X é dígito (ex: 2025.039982, 2026.008941). Verifique cabeçalho, rodapé, assunto do e-mail, referências e campos como 'Quote #', 'Quotation No', 'Ref:'. Se não encontrar este padrão, use o número de cotação que aparecer.",
       "numero_eco_req": "Número da REQ ECO no formato numérico (ex: 031326015461). Procure por 'REQ#', 'REQ:', 'Requisition' ou sequências longas de números que identifiquem a solicitação.",
       "observacoes": "Qualquer informação relevante adicional"
     }
@@ -74,8 +74,9 @@ Retorne SOMENTE o JSON abaixo, sem texto adicional, sem markdown:
     "data": "Data da PO",
     "fornecedor_selecionado": "Nome do fornecedor para quem a PO foi emitida",
     "solicitante": "Nome do solicitante/requisitante se disponível",
-    "fornecedor_escolhido_comentario": "Nome do fornecedor/fabricante real mencionado nos comentários do comprador ou observações da PO. Ex: se o comentário diz 'tng telecom' ou 'purchasing process made by eco - tng telecom', retornar 'tng telecom'. Se não houver menção de fornecedor nos comentários, retornar null.",
+    "fornecedor_escolhido_comentario": "Nome do fornecedor/fabricante REAL mencionado explicitamente nos comentários do comprador, observações ou notas da PO — NÃO o fornecedor do cabeçalho (que é o agente/broker). Exemplos de como costuma aparecer: 'purchasing from Power Specialties', 'vendor: TNG Telecom', 'buying from Bruce Kay', 'purchasing process made by ECO - TNG Telecom'. Retorne APENAS o nome do fornecedor real, sem texto adicional. Se não houver menção EXPLÍCITA de fornecedor real nos comentários, retornar null — NUNCA invente ou suponha um nome.",
     "numero_eco_req": "Número da REQ ECO no formato numérico (ex: 031326015461). Procure por 'REQ#', 'REQ:', 'Requisition' ou sequências longas de números que identifiquem a solicitação nos comentários ou cabeçalho da PO.",
+    "numero_cotacao_ref": "Número de cotação referenciado na PO — procure por padrões como 2025.XXXXXX ou 2026.XXXXXX (ex: 2025.039982) em qualquer campo da PO (comentários, descrição, referências). Se não encontrar este padrão, retornar null.",
     "centro_de_custo": "Nome do centro de custo/embarcação extraído da seção 'Cost Center Apportionment'. O formato é '(CÓDIGO) NOME - USD VALOR'. Retornar apenas o NOME. Ex: '(0185) C-ADMIRAL - USD 3.500,00' → 'C-ADMIRAL'. Se houver múltiplos centros de custo, retornar o nome do primeiro. Se não houver, retornar null.",
     "itens": [
       {

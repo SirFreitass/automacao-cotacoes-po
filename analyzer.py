@@ -4,11 +4,45 @@ analyzer.py
 Compara cotações entre fornecedores e valida a PO contra o fornecedor escolhido.
 """
 import re
+from datetime import date, timedelta
 
 
 def _norm_pn(pn: str) -> str:
     """Normaliza PN removendo separadores para comparação robusta."""
     return re.sub(r'[^A-Z0-9]', '', (pn or "").upper())
+
+
+def _parse_data(s) -> date | None:
+    """Converte string YYYY-MM-DD em objeto date. Retorna None se inválido."""
+    if not s:
+        return None
+    try:
+        return date.fromisoformat(str(s)[:10])
+    except ValueError:
+        return None
+
+
+def _checar_validade(forn: dict, hoje: date) -> dict:
+    """
+    Determina status de validade da cotação.
+    Prioridade: validade_cotacao (ISO) → data_cotacao + 30 dias.
+    Retorna dict com validade_data_iso, validade_dias_restantes, validade_vencida.
+    """
+    validade = _parse_data(forn.get("validade_cotacao"))
+    if validade is None:
+        emissao = _parse_data(forn.get("data_cotacao"))
+        if emissao:
+            validade = emissao + timedelta(days=30)
+
+    if validade is None:
+        return {"validade_data_iso": None, "validade_dias_restantes": None, "validade_vencida": None}
+
+    dias = (validade - hoje).days
+    return {
+        "validade_data_iso": validade.isoformat(),
+        "validade_dias_restantes": dias,
+        "validade_vencida": dias < 0,
+    }
 
 
 def _normalizar_freight(tipo: str, custo) -> str:
@@ -94,6 +128,7 @@ def analisar(dados_cotacao: dict, dados_po: dict) -> dict:
     # --- Resumo para Excel ---
     melhor_preco_nome = (resultado["melhor_preco"] or {}).get("nome", "")
     melhor_prazo_nome = (resultado["melhor_prazo"] or {}).get("nome", "")
+    hoje = date.today()
 
     for i, forn in enumerate(ranking_preco):
         posicao_prazo = next(
@@ -104,6 +139,7 @@ def analisar(dados_cotacao: dict, dados_po: dict) -> dict:
             not item.get("item_identico_ao_solicitado", True)
             for item in forn.get("itens", [])
         )
+        validade_info = _checar_validade(forn, hoje)
         resultado["resumo_fornecedores"].append({
             "posicao_preco": i + 1,
             "posicao_prazo": posicao_prazo,
@@ -117,8 +153,24 @@ def analisar(dados_cotacao: dict, dados_po: dict) -> dict:
             "forma_pagamento": forn.get("forma_pagamento"),
             "tem_item_substituto": "SIM" if tem_substituto else "Não",
             "numero_cotacao": forn.get("numero_cotacao"),
-            "validade_cotacao": forn.get("validade_cotacao"),
+            "validade_cotacao": validade_info["validade_data_iso"] or forn.get("validade_cotacao"),
+            "validade_vencida": validade_info["validade_vencida"],
+            "validade_dias_restantes": validade_info["validade_dias_restantes"],
         })
+
+    # --- Alertas de validade vencida ---
+    for forn_resumo in resultado["resumo_fornecedores"]:
+        if forn_resumo.get("validade_vencida"):
+            dias = abs(forn_resumo.get("validade_dias_restantes") or 0)
+            resultado["alertas_po"].append({
+                "tipo": "VALIDADE",
+                "severidade": "AVISO",
+                "mensagem": (
+                    f"Cotação de '{forn_resumo.get('nome')}' está vencida há {dias} dia(s) "
+                    f"(validade: {forn_resumo.get('validade_cotacao')}). "
+                    f"Confirme com o fornecedor se os preços ainda são válidos."
+                ),
+            })
 
     # --- Validação da PO ---
     if not po:

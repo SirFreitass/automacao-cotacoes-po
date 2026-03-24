@@ -44,7 +44,9 @@ Retorne SOMENTE o JSON abaixo, sem texto adicional, sem markdown:
       "tipo_freight": "Prepaid and Add | Free Delivery | ECO Runner | UPS Account | outro",
       "custo_freight": 0.00,
       "forma_pagamento": "Ex: Net 30, Credit Card, COD",
-      "validade_cotacao": "Data de validade se mencionada",
+      "data_cotacao": "Data de emissão da cotação no formato YYYY-MM-DD. Se não houver, null.",
+      "validade_cotacao": "Data de validade no formato YYYY-MM-DD. Se mencionar dias (ex: 'valid for 30 days', 'válido por 30 dias'), calcule somando à data de emissão. Tente sempre retornar uma data concreta no formato YYYY-MM-DD.",
+      "validade_dias": 30,
       "numero_cotacao": "Número da cotação — procure padrões como 2025.XXXXXX ou 2026.XXXXXX (ex: 2025.123456). Se não encontrar este padrão, use o número que aparecer.",
       "numero_eco_req": "Número da REQ ECO no formato numérico (ex: 031326015461). Procure por 'REQ#', 'REQ:', 'Requisition' ou sequências longas de números que identifiquem a solicitação.",
       "observacoes": "Qualquer informação relevante adicional"

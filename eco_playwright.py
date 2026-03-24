@@ -14,7 +14,12 @@ import os
 import re
 from playwright.async_api import async_playwright, TimeoutError as PWTimeout
 
+import logging
+
 from config import SHIP_VIA_MAP, GL_CODE_PLANILHA
+from utils import numero_cotacao as _numero_cotacao_util
+
+logger = logging.getLogger(__name__)
 
 ECO_URL         = "https://requisition.chouest.com"
 TIMEOUT         = 30_000
@@ -32,6 +37,7 @@ def _carregar_vendor_map() -> dict:
         with open(VENDOR_MAP_FILE, "r", encoding="utf-8") as f:
             return json.load(f)
     except Exception:
+        logger.warning("Não foi possível carregar vendor_map.json — usando mapa vazio.")
         return {}
 
 
@@ -41,7 +47,7 @@ def _salvar_vendor_map(vendor_map: dict):
         with open(VENDOR_MAP_FILE, "w", encoding="utf-8") as f:
             json.dump(vendor_map, f, ensure_ascii=False, indent=2)
     except Exception:
-        pass
+        logger.warning("Não foi possível salvar vendor_map.json.")
 
 
 # ─────────────────────────────────────────────────────────────────────
@@ -49,11 +55,7 @@ def _salvar_vendor_map(vendor_map: dict):
 # ─────────────────────────────────────────────────────────────────────
 
 def _numero_cotacao(analise: dict) -> str:
-    for forn in analise.get("ranking_preco", []):
-        nc = forn.get("numero_cotacao")
-        if nc:
-            return str(nc)
-    return ""
+    return _numero_cotacao_util(analise) or ""
 
 
 def _termo_busca_vendor(nome: str) -> str:
@@ -98,7 +100,7 @@ def _carregar_vessels() -> dict:
                 col += 3
         wb.close()
     except Exception:
-        pass
+        logger.warning("Não foi possível carregar planilha de GL Codes: %s", GL_CODE_PLANILHA)
     return vessels
 
 

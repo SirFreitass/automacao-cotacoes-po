@@ -19,7 +19,9 @@ try:
     import pdfplumber
 except ImportError as e:
     import subprocess
-    resposta = tk.messagebox.askyesno(
+    _root = tk.Tk()
+    _root.withdraw()
+    resposta = messagebox.askyesno(
         "Dependências não instaladas",
         f"Módulo ausente: {e}\n\nDeseja instalar as dependências agora?\n"
         "(Requer conexão com a internet)"
@@ -27,6 +29,7 @@ except ImportError as e:
     if resposta:
         subprocess.check_call([sys.executable, "-m", "pip", "install", "-r", "requirements.txt"])
         messagebox.showinfo("Instalação concluída", "Dependências instaladas. Reinicie o programa.")
+    _root.destroy()
     sys.exit(0)
 
 from config import GOOGLE_API_KEY

@@ -121,6 +121,7 @@ def _chamar_gemini(caminho_pdf: str, prompt: str, tentativas: int = 3) -> dict:
             config=types.UploadFileConfig(display_name="documento.pdf", mime_type="application/pdf"),
         )
 
+    resposta = None
     try:
         for tentativa in range(1, tentativas + 1):
             try:
@@ -142,6 +143,9 @@ def _chamar_gemini(caminho_pdf: str, prompt: str, tentativas: int = 3) -> dict:
             client.files.delete(name=arquivo.name)
         except Exception:
             pass
+
+    if resposta is None:
+        raise RuntimeError("Gemini não retornou resposta após todas as tentativas.")
 
     texto = resposta.text.strip()
 

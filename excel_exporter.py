@@ -9,6 +9,7 @@ Estrutura:
   Aba "N-Dados"         : dados estruturados para VBA (par N)
 """
 
+import logging
 import os
 import re
 from datetime import datetime
@@ -16,11 +17,9 @@ from openpyxl import Workbook, load_workbook
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 from openpyxl.utils import get_column_letter
 from config import ROBO_PLANILHA, SHIP_VIA_MAP
+from utils import norm_pn as _norm_pn, numero_cotacao as _numero_cotacao, normalizar_freight_robo as _normalizar_freight_robo
 
-
-def _norm_pn(pn: str) -> str:
-    """Normaliza PN: remove separadores (hífen, espaço, ponto) para comparação robusta."""
-    return re.sub(r'[^A-Z0-9]', '', (pn or "").upper())
+logger = logging.getLogger(__name__)
 
 
 # --- Lookup de fornecedores via Tabela Forn do Req-o-matic ---
@@ -43,7 +42,7 @@ def _carregar_tabela_forn():
                 _TABELA_FORN[str(nome_extraido).lower().strip()] = str(nome_sistema).strip()
         wb.close()
     except Exception:
-        pass  # Se o arquivo não estiver acessível, segue sem lookup
+        logger.warning("Não foi possível carregar Tabela Forn do Req-o-matic: %s", ROBO_PLANILHA)
 
 
 def _palavras_sig(s: str):
@@ -195,15 +194,6 @@ def _aba_indice(wb, lote):
     for col in range(1, n_cols + 1):
         _auto_largura(ws, col)
     ws.column_dimensions["E"].width = 30
-
-
-def _numero_cotacao(analise):
-    """Pega o número de cotação do primeiro fornecedor que tiver."""
-    for forn in analise.get("ranking_preco", []):
-        nc = forn.get("numero_cotacao")
-        if nc:
-            return nc
-    return None
 
 
 def _req_de_cotacao(analise):
@@ -405,27 +395,6 @@ def _aba_alertas(wb, analise, prefixo):
 # =====================================================================
 # ABA DADOS VBA (por par)
 # =====================================================================
-
-def _normalizar_freight_robo(tipo: str, custo) -> str:
-    """
-    Converte o tipo de freight para o vocabulário do Req-o-matic (pos sheet col G).
-    Mapeamento:
-      UPS Account  → "UPS Account"
-      ECO Runner   → "Runner Pick up"
-      Free/No charge → "Free Delivery"
-      Supplier Ship / com custo → "Supplier Ship"
-    """
-    t = (tipo or "").lower()
-    if "ups" in t:
-        return "UPS Account"
-    if "runner" in t or "eco runner" in t or "coleta" in t:
-        return "Runner Pick up"
-    if "free" in t or "no charge" in t or "no freight" in t:
-        return "Free Delivery"
-    if custo or "prepaid" in t or "add" in t or "include" in t or "ship" in t or "freight" in t:
-        return "Supplier Ship"
-    return tipo or ""
-
 
 def _aba_dados_vba(wb, analise, prefixo):  # mantida para compatibilidade mas não chamada
     ws = wb.create_sheet(f"{prefixo}-Dados")

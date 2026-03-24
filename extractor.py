@@ -60,6 +60,18 @@ Regras importantes:
 - preco_total: some itens + freight se aplicável
 - item_identico_ao_solicitado: false se for substituto, similar ou número de parte diferente
 - Se algum campo não estiver disponível, use null
+
+--- EXEMPLO DE SAÍDA CORRETA ---
+Dado um PDF com cotação da "Power Specialties" para uma válvula, a saída esperada seria:
+
+{"fornecedores": [{"nome": "Power Specialties", "contato": "sales@powerspec.com", "itens": [{"pn": "V-2541-B", "descricao": "2in Ball Valve 316SS 150# Flanged", "quantidade": 2, "preco_unitario": 485.00, "preco_total_item": 970.00, "item_identico_ao_solicitado": true, "observacao_item": null}], "preco_total": 1015.00, "moeda": "USD", "prazo_entrega": "2-3 weeks ARO", "prazo_entrega_dias": 15, "tipo_freight": "Supplier Ship", "custo_freight": 45.00, "forma_pagamento": "Net 30", "data_cotacao": "2026-03-10", "validade_cotacao": "2026-04-09", "validade_dias": 30, "numero_cotacao": "2026.010582", "numero_eco_req": "031326015461", "observacoes": "FOB Origin, Freight Prepaid and Add"}]}
+
+Notas sobre o exemplo:
+- numero_cotacao segue o padrão 20XX.XXXXXX (encontrado no cabeçalho do e-mail)
+- tipo_freight é "Supplier Ship" porque há custo de frete ($45.00)
+- validade_cotacao foi calculada: data_cotacao + 30 dias
+- preco_total = 970.00 (itens) + 45.00 (freight) = 1015.00
+--- FIM DO EXEMPLO ---
 """
 
 PROMPT_PO = """
@@ -105,12 +117,42 @@ Regras:
 - O campo pn pode ser um código interno da empresa — o PN real do fornecedor está entre parênteses no fim da descrição.
 - Se o freight não estiver discriminado na PO, use 0.00 e registre em observacoes.
 - Se algum campo não estiver disponível, use null.
+
+--- EXEMPLO DE SAÍDA CORRETA ---
+Dado um PDF de PO emitido para "Nautical Ventures" (broker) onde o comprador escreveu nos comentários "purchasing from Power Specialties - Quote 2026.010582 - REQ# 031326015461":
+
+{"po": {"numero_po": "PO-2026-04521", "data": "2026-03-15", "fornecedor_selecionado": "Nautical Ventures", "solicitante": "John Smith", "fornecedor_escolhido_comentario": "Power Specialties", "numero_eco_req": "031326015461", "numero_cotacao_ref": "2026.010582", "centro_de_custo": "C-ADMIRAL", "itens": [{"pn": "90259010", "pn_fornecedor": "V-2541-B", "descricao": "10.710081 2in Ball Valve 316SS (V-2541-B)", "quantidade": 2, "preco_unitario": 485.00, "preco_total_item": 970.00, "fornecedor_item": null}], "subtotal": 970.00, "custo_freight": 45.00, "preco_total": 1015.00, "moeda": "USD", "forma_pagamento": "Net 30", "prazo_entrega": "2-3 weeks", "observacoes": "purchasing from Power Specialties - Quote 2026.010582 - REQ# 031326015461"}}
+
+Notas sobre o exemplo:
+- fornecedor_selecionado = "Nautical Ventures" (cabeçalho da PO — é o broker)
+- fornecedor_escolhido_comentario = "Power Specialties" (extraído dos comentários — é o fornecedor REAL)
+- pn_fornecedor = "V-2541-B" (extraído dos parênteses na descrição)
+- numero_cotacao_ref = "2026.010582" (padrão 20XX.XXXXXX encontrado nos comentários)
+- centro_de_custo = "C-ADMIRAL" (apenas o nome, sem código nem valor)
+- fornecedor_item = null (não há menção de fornecedor específico por item)
+--- FIM DO EXEMPLO ---
 """
+
+
+def _extrair_texto_pdf(caminho_pdf: str) -> str:
+    """Extrai texto de todas as páginas do PDF usando pdfplumber."""
+    try:
+        partes = []
+        with pdfplumber.open(caminho_pdf) as pdf:
+            for i, page in enumerate(pdf.pages, 1):
+                texto = page.extract_text() or ""
+                if texto.strip():
+                    partes.append(f"--- Página {i} ---\n{texto}")
+        return "\n\n".join(partes)
+    except Exception:
+        return ""
 
 
 def _chamar_gemini(caminho_pdf: str, prompt: str, tentativas: int = 3) -> dict:
     """
-    Envia PDF ao Gemini e retorna JSON extraído.
+    Envia PDF + texto extraído ao Gemini e retorna JSON extraído.
+    O texto pré-extraído via pdfplumber serve como fonte complementar,
+    garantindo que dados não perdidos na leitura visual do PDF sejam capturados.
     Retry automático em caso de erro 429 (quota), com espera entre tentativas.
     """
     client = genai.Client(api_key=GOOGLE_API_KEY)
@@ -122,13 +164,25 @@ def _chamar_gemini(caminho_pdf: str, prompt: str, tentativas: int = 3) -> dict:
             config=types.UploadFileConfig(display_name="documento.pdf", mime_type="application/pdf"),
         )
 
+    # Extrai texto do PDF como fonte complementar
+    texto_pdf = _extrair_texto_pdf(caminho_pdf)
+    if texto_pdf:
+        prompt_completo = (
+            f"{prompt}\n\n"
+            "--- TEXTO EXTRAÍDO DO PDF (use como referência complementar) ---\n"
+            f"{texto_pdf}\n"
+            "--- FIM DO TEXTO EXTRAÍDO ---"
+        )
+    else:
+        prompt_completo = prompt
+
     resposta = None
     try:
         for tentativa in range(1, tentativas + 1):
             try:
                 resposta = client.models.generate_content(
                     model=GEMINI_MODEL,
-                    contents=[arquivo, prompt],
+                    contents=[arquivo, prompt_completo],
                 )
                 break  # sucesso — sai do loop
             except Exception as e:
@@ -157,12 +211,113 @@ def _chamar_gemini(caminho_pdf: str, prompt: str, tentativas: int = 3) -> dict:
     return json.loads(texto)
 
 
+FREIGHT_VALIDOS = {"Supplier Ship", "Free Delivery", "Runner Pick up", "UPS Account"}
+RE_QUOTATION = re.compile(r'^202[4-9]\.\d{6,}$')
+RE_DATA = re.compile(r'^\d{4}-\d{2}-\d{2}$')
+
+
+def _validar_cotacao(dados: dict) -> list[str]:
+    """Valida dados extraídos de cotação e retorna lista de problemas encontrados."""
+    problemas = []
+    fornecedores = dados.get("fornecedores", [])
+
+    if not fornecedores:
+        problemas.append("Nenhum fornecedor foi extraído. Revise o documento inteiro.")
+        return problemas
+
+    for i, f in enumerate(fornecedores, 1):
+        nome = f.get("nome")
+        if not nome or nome == "null":
+            problemas.append(f"Fornecedor {i}: nome está vazio.")
+
+        # Quotation code
+        qc = f.get("numero_cotacao")
+        if not qc or not RE_QUOTATION.match(str(qc)):
+            problemas.append(
+                f"Fornecedor {i} ({nome}): numero_cotacao ausente ou fora do padrão 20XX.XXXXXX. "
+                "Procure em TODAS as páginas: cabeçalhos, rodapés, assunto de e-mail, campos 'Quote #', 'Ref:'."
+            )
+
+        # Freight
+        tf = f.get("tipo_freight")
+        if tf not in FREIGHT_VALIDOS:
+            problemas.append(
+                f"Fornecedor {i} ({nome}): tipo_freight '{tf}' inválido. "
+                f"Use uma das opções: {', '.join(FREIGHT_VALIDOS)}."
+            )
+
+        # Preços
+        itens = f.get("itens", [])
+        if not itens:
+            problemas.append(f"Fornecedor {i} ({nome}): nenhum item extraído.")
+        for j, item in enumerate(itens, 1):
+            pu = item.get("preco_unitario")
+            if pu is None or (isinstance(pu, (int, float)) and pu <= 0):
+                problemas.append(f"Fornecedor {i} ({nome}), item {j}: preco_unitario ausente ou zero.")
+
+        # Data
+        dc = f.get("data_cotacao")
+        if dc and not RE_DATA.match(str(dc)):
+            problemas.append(f"Fornecedor {i} ({nome}): data_cotacao '{dc}' não está no formato YYYY-MM-DD.")
+
+    return problemas
+
+
+def _validar_po(dados: dict) -> list[str]:
+    """Valida dados extraídos de PO e retorna lista de problemas encontrados."""
+    problemas = []
+    po = dados.get("po", {})
+
+    if not po:
+        problemas.append("Nenhum dado de PO foi extraído. Revise o documento inteiro.")
+        return problemas
+
+    if not po.get("numero_po"):
+        problemas.append("numero_po está vazio.")
+
+    # Itens
+    itens = po.get("itens", [])
+    if not itens:
+        problemas.append("Nenhum item extraído da PO.")
+    for j, item in enumerate(itens, 1):
+        pu = item.get("preco_unitario")
+        if pu is None or (isinstance(pu, (int, float)) and pu <= 0):
+            problemas.append(f"Item {j}: preco_unitario ausente ou zero.")
+
+    # Quotation ref
+    ref = po.get("numero_cotacao_ref")
+    if ref and not RE_QUOTATION.match(str(ref)):
+        problemas.append(
+            f"numero_cotacao_ref '{ref}' fora do padrão 20XX.XXXXXX. "
+            "Procure em comentários, descrições e referências da PO."
+        )
+
+    return problemas
+
+
 def extrair_cotacoes(caminho_pdf: str) -> dict:
     """
     Extrai dados de cotações do PDF.
-    Retorna dict com chave 'fornecedores'.
+    Valida o resultado e re-extrai uma vez com instruções corretivas se houver problemas.
     """
-    return _chamar_gemini(caminho_pdf, PROMPT_COTACAO)
+    dados = _chamar_gemini(caminho_pdf, PROMPT_COTACAO)
+    problemas = _validar_cotacao(dados)
+
+    if problemas:
+        correcao = (
+            f"{PROMPT_COTACAO}\n\n"
+            "--- ATENÇÃO: CORREÇÕES NECESSÁRIAS ---\n"
+            "Uma extração anterior retornou os seguintes problemas:\n"
+            + "\n".join(f"- {p}" for p in problemas) + "\n"
+            "Por favor, corrija estes problemas na nova extração.\n"
+            "--- FIM DAS CORREÇÕES ---"
+        )
+        dados_corrigidos = _chamar_gemini(caminho_pdf, correcao)
+        # Usa corrigido apenas se ainda tem fornecedores
+        if dados_corrigidos.get("fornecedores"):
+            dados = dados_corrigidos
+
+    return dados
 
 
 def _extrair_quotation_code_pdfplumber(caminho_pdf: str) -> str | None:
@@ -206,10 +361,25 @@ def _extrair_quotation_code_pdfplumber(caminho_pdf: str) -> str | None:
 def extrair_po(caminho_pdf: str) -> dict:
     """
     Extrai dados da PO do PDF.
-    Retorna dict com chave 'po'.
+    Valida o resultado e re-extrai uma vez com instruções corretivas se houver problemas.
     Garante que numero_cotacao_ref seja extraído via pdfplumber como fallback.
     """
     dados = _chamar_gemini(caminho_pdf, PROMPT_PO)
+    problemas = _validar_po(dados)
+
+    if problemas:
+        correcao = (
+            f"{PROMPT_PO}\n\n"
+            "--- ATENÇÃO: CORREÇÕES NECESSÁRIAS ---\n"
+            "Uma extração anterior retornou os seguintes problemas:\n"
+            + "\n".join(f"- {p}" for p in problemas) + "\n"
+            "Por favor, corrija estes problemas na nova extração.\n"
+            "--- FIM DAS CORREÇÕES ---"
+        )
+        dados_corrigidos = _chamar_gemini(caminho_pdf, correcao)
+        if dados_corrigidos.get("po"):
+            dados = dados_corrigidos
+
     po = dados.get("po", {})
 
     # Se o Gemini não extraiu o quotation code, busca direto no texto do PDF

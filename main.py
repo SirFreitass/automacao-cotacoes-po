@@ -428,12 +428,27 @@ class App(tk.Tk):
             messagebox.showwarning("Sem pares", "Nenhum par pôde ser formado com os PDFs da pasta.")
             return
 
+        duplicados = 0
         for cot, po in pares:
+            # Verifica duplicata pelo nome do arquivo
+            nomes_existentes = {
+                (os.path.basename(c), os.path.basename(p))
+                for c, p in self._fila
+            }
+            if (os.path.basename(cot), os.path.basename(po)) in nomes_existentes:
+                duplicados += 1
+                continue
             self._fila.append((cot, po))
             nome_cot = os.path.basename(cot)[:32]
             nome_po  = os.path.basename(po)[:32]
             n = len(self._fila)
             self._listbox.insert("end", f"  {n}   {nome_cot:<32}  {nome_po}")
+
+        if duplicados:
+            messagebox.showinfo(
+                "Duplicatas ignoradas",
+                f"{duplicados} par(es) já estava(m) na fila e foi(ram) ignorado(s)."
+            )
 
         msg = f"{len(self._fila)} par(es) na fila."
         if nao_pareados:
@@ -478,12 +493,26 @@ class App(tk.Tk):
             )
             return
 
+        duplicados = 0
         for cot, po in pares:
+            nomes_existentes = {
+                (os.path.basename(c), os.path.basename(p))
+                for c, p in self._fila
+            }
+            if (os.path.basename(cot), os.path.basename(po)) in nomes_existentes:
+                duplicados += 1
+                continue
             self._fila.append((cot, po))
             nome_cot = os.path.basename(cot)[:32]
             nome_po  = os.path.basename(po)[:32]
             n = len(self._fila)
             self._listbox.insert("end", f"  {n}   {nome_cot:<32}  {nome_po}")
+
+        if duplicados:
+            messagebox.showinfo(
+                "Duplicatas ignoradas",
+                f"{duplicados} par(es) já estava(m) na fila e foi(ram) ignorado(s)."
+            )
 
         msg = f"{len(self._fila)} par(es) na fila."
         avisos = []
@@ -615,11 +644,17 @@ class App(tk.Tk):
                         qtd = int(float(qtd_raw)) if qtd_raw is not None else None
                     except (TypeError, ValueError, IndexError):
                         qtd = None
+                    # col W (índice 22) = UOM extraída do documento
+                    try:
+                        uom_raw = str(row[22] or "").strip() if len(row) > 22 else ""
+                    except (IndexError, TypeError):
+                        uom_raw = ""
                     grupos[numero_po]["itens"].append({
                         "pn":            pn_interno,
                         "descricao":     descricao,
                         "preco_unitario": preco,
                         "quantidade":    qtd,
+                        "uom":           uom_raw,
                     })
 
             wb.close()

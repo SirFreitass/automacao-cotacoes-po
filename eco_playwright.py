@@ -26,6 +26,38 @@ TIMEOUT         = 30_000
 SHORT_WAIT      = 5_000
 VENDOR_MAP_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "vendor_map.json")
 
+# Mapeamento de UOM extraída → opção no ECO Requisition (kendo-dropdownlist)
+# Chaves em lowercase; valores EXATOS como aparecem no dropdown do ECO
+UOM_MAP = {
+    "each": "each", "ea": "each", "pc": "each", "pcs": "each", "piece": "each",
+    "unit": "each", "un": "each", "und": "each",
+    "box": "box", "bx": "box",
+    "case": "case", "cs": "case",
+    "cm": "cm",
+    "cu yd": "cu yd", "cubic yard": "cu yd",
+    "day": "day", "days": "day",
+    "dm": "dm",
+    "dozen": "dozen", "dz": "dozen", "doz": "dozen",
+    "drum": "drum",
+    "feet": "feet", "ft": "feet", "foot": "feet",
+    "gal": "gal", "gallon": "gal", "gallons": "gal",
+    "hour": "hour", "hr": "hour", "hrs": "hour",
+    "lb": "lb", "lbs": "lb", "pound": "lb", "pounds": "lb",
+    "liter": "liter", "ltr": "liter", "l": "liter", "litre": "liter",
+    "meter": "meter", "m": "meter", "mtr": "meter", "metre": "meter",
+    "miles": "miles", "mi": "miles", "mile": "miles",
+    "month": "month", "mo": "month", "months": "month",
+    "oz": "oz", "ounce": "oz", "ounces": "oz",
+    "pack": "pack", "pk": "pack",
+    "pail": "pail",
+    "pair": "pair", "pr": "pair", "pairs": "pair",
+    "quart": "quart", "qt": "quart",
+    "set": "set", "kit": "set", "lot": "set",
+    "sq ft": "sq ft", "sqft": "sq ft", "square foot": "sq ft", "square feet": "sq ft",
+    "ton": "ton", "tons": "ton",
+    "week": "week", "wk": "week", "weeks": "week",
+}
+
 
 # ─────────────────────────────────────────────────────────────────────
 # Memória de fornecedores — persiste entre execuções
@@ -481,6 +513,33 @@ async def _criar_po_par(page, par: dict, vessels: dict, confirmar, escolher, ven
                 else:
                     qtd_preenchida = current_qty
             # Se nenhum seletor encontrou o campo, continua sem alterar (não bloqueia)
+
+            # ── L2b. UOM (Unidade de Medida) ───────────────────────────
+            uom_extraida = ""
+            if item_casado:
+                uom_extraida = (item_casado.get("uom") or "").strip().lower()
+            uom_eco = UOM_MAP.get(uom_extraida, "")
+
+            if uom_eco:
+                try:
+                    uom_dd = page.locator(
+                        "kendo-dropdownlist[formcontrolname='unitOfMeasure']"
+                    ).first
+                    await uom_dd.wait_for(state="visible", timeout=3000)
+                    # Verifica valor atual — só altera se diferente
+                    uom_atual = (await uom_dd.inner_text()).strip().lower()
+                    if uom_atual != uom_eco:
+                        await uom_dd.click()
+                        await page.wait_for_timeout(400)
+                        # Kendo popup: li items na lista
+                        uom_opt = page.locator("kendo-popup li, ul.k-list li").filter(
+                            has_text=re.compile(f"^{re.escape(uom_eco)}$", re.IGNORECASE)
+                        ).first
+                        await uom_opt.wait_for(state="visible", timeout=3000)
+                        await uom_opt.click()
+                        await page.wait_for_timeout(300)
+                except Exception:
+                    pass  # Mantém UOM padrão se não conseguir selecionar
 
             # ── L3. Ship VIA ─────────────────────────────────────────────
             # Prioridade: valor direto da planilha (col V) > mapeamento tipo_freight

@@ -25,13 +25,14 @@ Retorne SOMENTE o JSON abaixo, sem texto adicional, sem markdown:
 {
   "fornecedores": [
     {
-      "nome": "Nome do fornecedor",
+      "nome": "Nome COMPLETO do fornecedor — OBRIGATÓRIO, nunca deixar vazio. Procure no cabeçalho, logotipo, assinatura, rodapé, 'From:', 'Vendor:', 'Supplier:', 'Company:'. Se o nome aparecer de formas diferentes no documento (ex: 'Puckett CAT' e 'Puckett Machinery Company'), use o nome mais completo/formal.",
       "contato": "Email ou telefone se disponível",
       "itens": [
         {
           "pn": "Part Number exato como aparece",
           "descricao": "Descrição completa do item",
           "quantidade": 1,
+          "uom": "Unidade de medida do item tal como aparece no documento (ex: each, ft, lot, box, lb, gal, meter, set, pair, dozen). Se não informada, retornar 'each'.",
           "preco_unitario": 0.00,
           "preco_total_item": 0.00,
           "item_identico_ao_solicitado": true,
@@ -60,11 +61,14 @@ Regras importantes:
 - preco_total: some itens + freight se aplicável
 - item_identico_ao_solicitado: false se for substituto, similar ou número de parte diferente
 - Se algum campo não estiver disponível, use null
+- nome do fornecedor: NUNCA retorne vazio. Use o nome formal/completo que aparece no documento.
+- uom: normalize para inglês (ex: "unidade"/"un" → "each", "pé"/"pés" → "feet", "caixa" → "box"). Use sempre o termo em inglês.
+- Se o mesmo fornecedor aparece com nomes ligeiramente diferentes (ex: "Louisiana CAT" vs "Louisiana Cat"), use a versão EXATA como aparece no CABEÇALHO ou logotipo da cotação.
 
 --- EXEMPLO DE SAÍDA CORRETA ---
 Dado um PDF com cotação da "Power Specialties" para uma válvula, a saída esperada seria:
 
-{"fornecedores": [{"nome": "Power Specialties", "contato": "sales@powerspec.com", "itens": [{"pn": "V-2541-B", "descricao": "2in Ball Valve 316SS 150# Flanged", "quantidade": 2, "preco_unitario": 485.00, "preco_total_item": 970.00, "item_identico_ao_solicitado": true, "observacao_item": null}], "preco_total": 1015.00, "moeda": "USD", "prazo_entrega": "2-3 weeks ARO", "prazo_entrega_dias": 15, "tipo_freight": "Supplier Ship", "custo_freight": 45.00, "forma_pagamento": "Net 30", "data_cotacao": "2026-03-10", "validade_cotacao": "2026-04-09", "validade_dias": 30, "numero_cotacao": "2026.010582", "numero_eco_req": "031326015461", "observacoes": "FOB Origin, Freight Prepaid and Add"}]}
+{"fornecedores": [{"nome": "Power Specialties", "contato": "sales@powerspec.com", "itens": [{"pn": "V-2541-B", "descricao": "2in Ball Valve 316SS 150# Flanged", "quantidade": 2, "uom": "each", "preco_unitario": 485.00, "preco_total_item": 970.00, "item_identico_ao_solicitado": true, "observacao_item": null}], "preco_total": 1015.00, "moeda": "USD", "prazo_entrega": "2-3 weeks ARO", "prazo_entrega_dias": 15, "tipo_freight": "Supplier Ship", "custo_freight": 45.00, "forma_pagamento": "Net 30", "data_cotacao": "2026-03-10", "validade_cotacao": "2026-04-09", "validade_dias": 30, "numero_cotacao": "2026.010582", "numero_eco_req": "031326015461", "observacoes": "FOB Origin, Freight Prepaid and Add"}]}
 
 Notas sobre o exemplo:
 - numero_cotacao segue o padrão 20XX.XXXXXX (encontrado no cabeçalho do e-mail)
@@ -93,10 +97,11 @@ Retorne SOMENTE o JSON abaixo, sem texto adicional, sem markdown:
     "centro_de_custo": "Nome do centro de custo/embarcação extraído da seção 'Cost Center Apportionment'. O formato é '(CÓDIGO) NOME - USD VALOR'. Retornar apenas o NOME. Ex: '(0185) C-ADMIRAL - USD 3.500,00' → 'C-ADMIRAL'. Se houver múltiplos centros de custo, retornar o nome do primeiro. Se não houver, retornar null.",
     "itens": [
       {
-        "pn": "Código interno da PO (pode ser código numérico interno da empresa)",
+        "pn": "Código interno REAL do produto na PO — geralmente no formato XX.XXXXXX (ex: 10.711325, 90259010). ATENÇÃO: números sequenciais como '000010', '000020', '000030' são NÚMEROS DE LINHA do SAP, NÃO são part numbers reais. Nesse caso, procure o PN real na descrição do item (formato XX.XXXXXX) e use esse.",
         "pn_fornecedor": "PN do fornecedor extraído da descrição do item — geralmente aparece entre parênteses no final da descrição. Ex: 'Antenna GPS (GPS-ANT-001)' → 'GPS-ANT-001'. Se não houver parênteses com PN, retornar null.",
         "descricao": "Descrição completa do item",
         "quantidade": 1,
+        "uom": "Unidade de medida do item (ex: each, ft, lot, box, lb, gal, meter, set, pair, dozen). Se não informada, retornar 'each'.",
         "preco_unitario": 0.00,
         "preco_total_item": 0.00,
         "fornecedor_item": "Nome do fornecedor/fabricante específico para ESTE item, se mencionado nos comentários ou notações individuais do item. Ignorar o fornecedor geral da PO — apenas capturar se houver menção explícita por item. Ex: nota do item diz 'purchasing from Bruce Kay' → 'Bruce Kay'. Se não houver, retornar null."
@@ -121,7 +126,7 @@ Regras:
 --- EXEMPLO DE SAÍDA CORRETA ---
 Dado um PDF de PO emitido para "Nautical Ventures" (broker) onde o comprador escreveu nos comentários "purchasing from Power Specialties - Quote 2026.010582 - REQ# 031326015461":
 
-{"po": {"numero_po": "PO-2026-04521", "data": "2026-03-15", "fornecedor_selecionado": "Nautical Ventures", "solicitante": "John Smith", "fornecedor_escolhido_comentario": "Power Specialties", "numero_eco_req": "031326015461", "numero_cotacao_ref": "2026.010582", "centro_de_custo": "C-ADMIRAL", "itens": [{"pn": "90259010", "pn_fornecedor": "V-2541-B", "descricao": "10.710081 2in Ball Valve 316SS (V-2541-B)", "quantidade": 2, "preco_unitario": 485.00, "preco_total_item": 970.00, "fornecedor_item": null}], "subtotal": 970.00, "custo_freight": 45.00, "preco_total": 1015.00, "moeda": "USD", "forma_pagamento": "Net 30", "prazo_entrega": "2-3 weeks", "observacoes": "purchasing from Power Specialties - Quote 2026.010582 - REQ# 031326015461"}}
+{"po": {"numero_po": "PO-2026-04521", "data": "2026-03-15", "fornecedor_selecionado": "Nautical Ventures", "solicitante": "John Smith", "fornecedor_escolhido_comentario": "Power Specialties", "numero_eco_req": "031326015461", "numero_cotacao_ref": "2026.010582", "centro_de_custo": "C-ADMIRAL", "itens": [{"pn": "90259010", "pn_fornecedor": "V-2541-B", "descricao": "10.710081 2in Ball Valve 316SS (V-2541-B)", "quantidade": 2, "uom": "each", "preco_unitario": 485.00, "preco_total_item": 970.00, "fornecedor_item": null}], "subtotal": 970.00, "custo_freight": 45.00, "preco_total": 1015.00, "moeda": "USD", "forma_pagamento": "Net 30", "prazo_entrega": "2-3 weeks", "observacoes": "purchasing from Power Specialties - Quote 2026.010582 - REQ# 031326015461"}}
 
 Notas sobre o exemplo:
 - fornecedor_selecionado = "Nautical Ventures" (cabeçalho da PO — é o broker)
@@ -283,6 +288,13 @@ def _validar_po(dados: dict) -> list[str]:
         pu = item.get("preco_unitario")
         if pu is None or (isinstance(pu, (int, float)) and pu <= 0):
             problemas.append(f"Item {j}: preco_unitario ausente ou zero.")
+        # Detecta PNs falsos (números de linha SAP: 000010, 000020, etc.)
+        pn = str(item.get("pn") or "").strip()
+        if re.match(r'^0{2,}\d{1,2}$', pn):
+            problemas.append(
+                f"Item {j}: pn '{pn}' parece ser número de linha SAP, NÃO um part number real. "
+                "Procure o PN real na descrição do item (formato XX.XXXXXX como 10.711325)."
+            )
 
     # Quotation ref
     ref = po.get("numero_cotacao_ref")

@@ -21,6 +21,33 @@ from utils import norm_pn as _norm_pn, norm_vendor as _norm_vendor, numero_cotac
 
 logger = logging.getLogger(__name__)
 
+# Normalização de UOM — variações comuns → nome padrão do ECO
+_UOM_NORM = {
+    "ea": "each", "pc": "each", "pcs": "each", "piece": "each",
+    "unit": "each", "un": "each", "und": "each", "units": "each",
+    "bx": "box", "cs": "case",
+    "ft": "feet", "foot": "feet",
+    "gal": "gallon", "gallons": "gal",
+    "hr": "hour", "hrs": "hour",
+    "lbs": "lb", "pound": "lb", "pounds": "lb",
+    "ltr": "liter", "l": "liter", "litre": "liter",
+    "m": "meter", "mtr": "meter", "metre": "meter",
+    "mi": "miles", "mile": "miles",
+    "mo": "month", "months": "month",
+    "ounce": "oz", "ounces": "oz",
+    "pk": "pack", "pr": "pair", "pairs": "pair",
+    "qt": "quart", "dz": "dozen", "doz": "dozen",
+    "sqft": "sq ft", "square foot": "sq ft", "square feet": "sq ft",
+    "tons": "ton", "wk": "week", "weeks": "week",
+    "days": "day", "kit": "set", "lot": "set",
+    "cubic yard": "cu yd",
+}
+
+def _normalizar_uom(uom_raw: str) -> str:
+    """Normaliza UOM extraída para o nome padrão do ECO Requisition."""
+    u = (uom_raw or "each").strip().lower()
+    return _UOM_NORM.get(u, u)
+
 
 # --- Lookup de fornecedores via Tabela Forn do Req-o-matic ---
 # Carregado uma única vez na inicialização do módulo para evitar
@@ -850,6 +877,7 @@ def _aba_robo_consolidada(wb, lote):
         "Análise",       # col T — status de divergência (NÃO colar no Req-o-matic)
         "Qty (PO)",      # col U — quantidade da PO para conferência com ECO REQ
         "Ship VIA (ECO)",# col V — opção Ship VIA a selecionar no ECO (vermelho = preencher manualmente)
+        "UOM",           # col W — unidade de medida extraída do documento
     ]
     for col, titulo in enumerate(colunas, 1):
         cor_cab = "9C0006" if col == 20 else ("FF6600" if col in (21, 22) else "1F3864")
@@ -978,7 +1006,7 @@ def _aba_robo_consolidada(wb, lote):
                 numero_cot, pn_interno, descricao, preco_unit,
                 centro_de_custo, fornecedor_eco_item, freight_robo,
                 "", obs_alertas, id_quote, eco_req, quote_po,
-                "", "", observacoes, forn_item or forn_extraido, "", numero_po, coluna5,
+                "", "", observacoes, forn_item or forn_extraido, fornecedor_eco_item, numero_po, coluna5,
             ]
 
             for col, val in enumerate(dados, 1):
@@ -1003,6 +1031,10 @@ def _aba_robo_consolidada(wb, lote):
                 _celula(ws, linha_atual, 22, txt_manual, COR_ALERTA,
                         negrito=True, cor_fonte=COR_ALERTA_FONT, alinhamento="center")
 
+            # Col W — UOM normalizada
+            uom_item = _normalizar_uom(item.get("uom") or "each")
+            _celula(ws, linha_atual, 23, uom_item, cor_linha, alinhamento="center")
+
             ws.row_dimensions[linha_atual].height = 18
             linha_atual += 1
 
@@ -1014,6 +1046,7 @@ def _aba_robo_consolidada(wb, lote):
         "T": 35,   # Análise
         "U": 10,   # Qty (PO)
         "V": 22,   # Ship VIA (ECO)
+        "W": 10,   # UOM
     }
     for col_letter, w in larguras.items():
         ws.column_dimensions[col_letter].width = w

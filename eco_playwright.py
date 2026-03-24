@@ -286,30 +286,49 @@ async def _criar_po_par(page, par: dict, vessels: dict, confirmar, escolher, ven
             return {"po": numero_po, "status": "CANCELADO", "mensagem": "Cancelado (ver resultados)"}
 
         # ── E. Selecionar a requisição ───────────────────────────────────
-        if count > 1 and centro_custo:
+        # Prioridade: 1) número da PO no nome da requisição
+        #             2) centro de custo no texto da linha
+        #             3) primeira linha como fallback
+        if count > 1:
             abriu = False
-            linha_escolhida = 0
+            idx_escolhido = -1
+            motivo_escolha = ""
+
+            # 1ª tentativa: PO number no nome da requisição
             for idx in range(count):
                 txt = await result_cells.nth(idx).inner_text()
-                if centro_custo.upper() in txt.upper():
-                    linha_escolhida = idx + 1
-                    if not await _ok(confirmar,
-                                     f"PO {numero_po} — E: Abrir requisição",
-                                     f"Encontrado resultado com centro de custo '{centro_custo}' "
-                                     f"na linha {linha_escolhida}.\n\n"
-                                     "Vai clicar no botão desta linha.\n\nProsseguir?"):
-                        return {"po": numero_po, "status": "CANCELADO", "mensagem": "Cancelado (abrir req)"}
-                    row = result_cells.nth(idx).locator("xpath=..")
-                    await row.locator("button").click()
-                    abriu = True
+                if numero_po and numero_po in txt:
+                    idx_escolhido = idx
+                    motivo_escolha = f"número da PO '{numero_po}' encontrado na linha {idx+1}"
                     break
+
+            # 2ª tentativa: centro de custo
+            if idx_escolhido < 0 and centro_custo:
+                for idx in range(count):
+                    txt = await result_cells.nth(idx).inner_text()
+                    if centro_custo.upper() in txt.upper():
+                        idx_escolhido = idx
+                        motivo_escolha = f"centro de custo '{centro_custo}' encontrado na linha {idx+1}"
+                        break
+
+            # 3ª tentativa: primeira linha
+            if idx_escolhido < 0:
+                idx_escolhido = 0
+                motivo_escolha = "nenhum critério encontrado — usando primeira linha como fallback"
+
+            if not await _ok(confirmar,
+                             f"PO {numero_po} — E: Abrir requisição",
+                             f"Seleção: {motivo_escolha}.\n\n"
+                             "Vai clicar no botão desta linha.\n\nProsseguir?"):
+                return {"po": numero_po, "status": "CANCELADO", "mensagem": "Cancelado (abrir req)"}
+
+            row_cells = result_cells.nth(idx_escolhido)
+            row_el = row_cells.locator("xpath=..")
+            btn_row = row_el.locator("button")
+            if await btn_row.count() > 0:
+                await btn_row.first.click()
+                abriu = True
             if not abriu:
-                if not await _ok(confirmar,
-                                 f"PO {numero_po} — E: Abrir requisição (fallback)",
-                                 f"Centro de custo '{centro_custo}' não encontrado nos resultados.\n\n"
-                                 "Vai clicar no botão da PRIMEIRA linha como fallback.\n"
-                                 "Seletor: 'td[role=gridcell][aria-colindex=8] button' (primeiro)\n\nProsseguir?"):
-                    return {"po": numero_po, "status": "CANCELADO", "mensagem": "Cancelado (abrir req fallback)"}
                 await page.locator("td[role='gridcell'][aria-colindex='8'] button").first.click()
         else:
             if not await _ok(confirmar,
@@ -431,7 +450,7 @@ async def _criar_po_par(page, par: dict, vessels: dict, confirmar, escolher, ven
             # press_sequentially digita char a char, acionando o autocomplete Angular
             await vendor_input.click()
             await vendor_input.press("Control+a")
-            await vendor_input.press_sequentially(termo_busca, delay=80)
+            await vendor_input.press_sequentially(termo_busca, delay=40)
 
             # ── J. Aguardar e selecionar autocomplete ────────────────────
             chave_forn = fornecedor_eco_item.lower().strip()
@@ -640,8 +659,9 @@ async def _criar_po_par(page, par: dict, vessels: dict, confirmar, escolher, ven
             # Se nenhum seletor encontrou o campo, continua sem alterar (não bloqueia)
 
             # ── L3. Ship VIA ─────────────────────────────────────────────
+            # Prioridade: valor direto da planilha (col V) > mapeamento tipo_freight
             tipo_freight   = (melhor.get("tipo_freight") or "").strip()
-            ship_via_alvo  = SHIP_VIA_MAP.get(tipo_freight.lower())
+            ship_via_alvo  = (melhor.get("ship_via_direto") or "").strip() or SHIP_VIA_MAP.get(tipo_freight.lower())
 
             if ship_via_alvo:
                 if not await _ok(confirmar,

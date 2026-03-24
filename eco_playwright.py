@@ -129,57 +129,14 @@ async def _escolher_async(escolher, titulo: str, opcoes: list) -> int:
 # ─────────────────────────────────────────────────────────────────────
 
 async def _login(page, usuario: str, senha: str, confirmar):
-
-    # 1. Navegar para login
-    if not await _ok(confirmar,
-                     "LOGIN — Passo 1/5: Navegar",
-                     f"Vai abrir a URL:\n{ECO_URL}/login\n\nProsseguir?"):
-        raise RuntimeError("Cancelado pelo usuário (navegar para login)")
     await page.goto(f"{ECO_URL}/login")
-
-    # 2. Aguardar campo usuário
-    if not await _ok(confirmar,
-                     "LOGIN — Passo 2/5: Aguardar campo usuário",
-                     "Aguardando o campo '#username' ficar visível.\n\nProsseguir?"):
-        raise RuntimeError("Cancelado pelo usuário (aguardar campo usuário)")
     await page.wait_for_selector("#username", timeout=TIMEOUT)
-
-    # 3. Preencher usuário
-    if not await _ok(confirmar,
-                     "LOGIN — Passo 3/5: Preencher usuário",
-                     f"Vai clicar no campo '#username' e digitar:\n'{usuario}'\n\nProsseguir?"):
-        raise RuntimeError("Cancelado pelo usuário (preencher usuário)")
     await page.fill("#username", usuario)
-
-    # 4. Preencher senha
-    # O campo de senha é o input dentro do SEGUNDO kendo-formfield da página
-    if not await _ok(confirmar,
-                     "LOGIN — Passo 4/5: Preencher senha",
-                     "Vai localizar o campo de senha via seletor:\n"
-                     "'kendo-formfield' → nth(1) → 'input' (segundo bloco de formulário)\n\n"
-                     "e preencher com a senha informada.\n\nProsseguir?"):
-        raise RuntimeError("Cancelado pelo usuário (preencher senha)")
     pw = page.locator("kendo-formfield").nth(1).locator("input").first
     await pw.fill(senha)
-
-    # 5. Clicar no botão de login
-    if not await _ok(confirmar,
-                     "LOGIN — Passo 5/5: Clicar em Entrar",
-                     "Vai clicar no botão de login via seletor:\n"
-                     "'button[type=\"submit\"]' (primeiro)\n\n"
-                     "Verifique no navegador se o botão correto está destacado.\n\nProsseguir?"):
-        raise RuntimeError("Cancelado pelo usuário (clicar login)")
     await page.locator("button[type='submit']").first.click()
-
-    # Aguarda redirecionamento
     await page.wait_for_url(f"{ECO_URL}/**", timeout=TIMEOUT)
     await page.wait_for_load_state("networkidle", timeout=TIMEOUT)
-
-    if not await _ok(confirmar,
-                     "LOGIN — Concluído",
-                     f"Login realizado. URL atual:\n{page.url}\n\n"
-                     "A tela carregada está correta?"):
-        raise RuntimeError("Usuário indicou que o login não funcionou corretamente")
 
 
 # ─────────────────────────────────────────────────────────────────────
@@ -204,18 +161,9 @@ async def _criar_po_par(page, par: dict, vessels: dict, confirmar, escolher, ven
 
     try:
         # ── A. Navegar para o histórico ─────────────────────────────────
-        if not await _ok(confirmar,
-                         f"PO {numero_po} — A: Navegar para histórico",
-                         f"Vai abrir:\n{ECO_URL}/requisition/history\n\nProsseguir?"):
-            return {"po": numero_po, "status": "CANCELADO", "mensagem": "Cancelado (navegar histórico)"}
         await page.goto(f"{ECO_URL}/requisition/history")
 
         # ── B. Aguardar tabela carregar ──────────────────────────────────
-        if not await _ok(confirmar,
-                         f"PO {numero_po} — B: Aguardar tabela",
-                         "Aguardando a tabela de histórico carregar.\n"
-                         "Seletor: 'kendo-grid-list table tbody tr'\n\nProsseguir?"):
-            return {"po": numero_po, "status": "CANCELADO", "mensagem": "Cancelado (aguardar tabela)"}
         search_box = page.locator("kendo-textbox input").first
         await search_box.wait_for(state="visible", timeout=TIMEOUT)
         await page.wait_for_selector("kendo-grid-list table tbody tr", timeout=TIMEOUT)
@@ -230,26 +178,9 @@ async def _criar_po_par(page, par: dict, vessels: dict, confirmar, escolher, ven
         else:
             numero_busca = numero_cot
 
-        if not await _ok(confirmar,
-                         f"PO {numero_po} — C: Pesquisar cotação",
-                         f"Número extraído   : {numero_cot}\n"
-                         f"Número formatado  : {numero_busca}\n\n"
-                         "Seletor: 'kendo-textbox input' (primeiro)\n\nProsseguir?"):
-            return {"po": numero_po, "status": "CANCELADO", "mensagem": "Cancelado (preencher busca)"}
-        # Usa press_sequentially (digita caractere a caractere) em vez de fill()
-        # para garantir que o ponto seja digitado corretamente no Angular
         await search_box.click()
-        await search_box.press("Control+a")   # seleciona qualquer texto existente
+        await search_box.press("Control+a")
         await search_box.press_sequentially(numero_busca, delay=50)
-
-        # Aguarda a grade mostrar pelo menos uma célula com o número pesquisado
-        # (não usa timeout fixo — só avança quando o ECO realmente filtrou)
-        if not await _ok(confirmar,
-                         f"PO {numero_po} — C: Aguardando resultados",
-                         f"Campo preenchido com '{numero_busca}'.\n\n"
-                         "Aguardando a tabela filtrar e exibir resultados contendo este número.\n"
-                         f"Seletor: td:has-text('{numero_busca}')\n\nProsseguir para aguardar?"):
-            return {"po": numero_po, "status": "CANCELADO", "mensagem": "Cancelado (aguardar filtro)"}
 
         try:
             await page.wait_for_selector(
@@ -267,94 +198,44 @@ async def _criar_po_par(page, par: dict, vessels: dict, confirmar, escolher, ven
         await result_cells.first.wait_for(state="visible", timeout=TIMEOUT)
         count = await result_cells.count()
 
-        linhas = []
-        for idx in range(min(count, 8)):
-            try:
-                txt = (await result_cells.nth(idx).inner_text()).strip()
-                linhas.append(f"  [{idx+1}] {txt}")
-            except Exception:
-                linhas.append(f"  [{idx+1}] (erro ao ler)")
-
-        if not await _ok(confirmar,
-                         f"PO {numero_po} — D: Resultados da busca",
-                         f"Cotação pesquisada: {numero_cot}\n"
-                         f"Centro de custo: {centro_custo or '(não informado)'}\n\n"
-                         f"{count} resultado(s) encontrado(s):\n" +
-                         "\n".join(linhas) +
-                         ("\n  ..." if count > 8 else "") +
-                         "\n\nProsseguir para abrir a requisição?"):
-            return {"po": numero_po, "status": "CANCELADO", "mensagem": "Cancelado (ver resultados)"}
-
         # ── E. Selecionar a requisição ───────────────────────────────────
-        # Prioridade: 1) número da PO no nome da requisição
-        #             2) centro de custo no texto da linha
-        #             3) primeira linha como fallback
         if count > 1:
-            abriu = False
-            idx_escolhido = -1
-            motivo_escolha = ""
+            # Lê os textos de todas as linhas para exibir ao usuário
+            linhas_txt = []
+            for idx in range(min(count, 10)):
+                try:
+                    txt = (await result_cells.nth(idx).inner_text()).strip()
+                    linhas_txt.append(txt)
+                except Exception:
+                    linhas_txt.append(f"(linha {idx+1} — erro ao ler)")
 
-            # 1ª tentativa: PO number no nome da requisição
-            for idx in range(count):
-                txt = await result_cells.nth(idx).inner_text()
-                if numero_po and numero_po in txt:
-                    idx_escolhido = idx
-                    motivo_escolha = f"número da PO '{numero_po}' encontrado na linha {idx+1}"
-                    break
-
-            # 2ª tentativa: centro de custo
-            if idx_escolhido < 0 and centro_custo:
-                for idx in range(count):
-                    txt = await result_cells.nth(idx).inner_text()
-                    if centro_custo.upper() in txt.upper():
-                        idx_escolhido = idx
-                        motivo_escolha = f"centro de custo '{centro_custo}' encontrado na linha {idx+1}"
-                        break
-
-            # 3ª tentativa: primeira linha
+            # ── CONFIRMAÇÃO 1: usuário escolhe qual requisição abrir ──────
+            idx_escolhido = await _escolher_async(
+                escolher,
+                f"PO {numero_po} — Selecionar requisição ({count} encontrada(s))",
+                linhas_txt,
+            )
             if idx_escolhido < 0:
-                idx_escolhido = 0
-                motivo_escolha = "nenhum critério encontrado — usando primeira linha como fallback"
-
-            if not await _ok(confirmar,
-                             f"PO {numero_po} — E: Abrir requisição",
-                             f"Seleção: {motivo_escolha}.\n\n"
-                             "Vai clicar no botão desta linha.\n\nProsseguir?"):
-                return {"po": numero_po, "status": "CANCELADO", "mensagem": "Cancelado (abrir req)"}
+                return {"po": numero_po, "status": "CANCELADO", "mensagem": "Cancelado (seleção de requisição)"}
 
             row_cells = result_cells.nth(idx_escolhido)
             row_el = row_cells.locator("xpath=..")
             btn_row = row_el.locator("button")
+            abriu = False
             if await btn_row.count() > 0:
                 await btn_row.first.click()
                 abriu = True
             if not abriu:
                 await page.locator("td[role='gridcell'][aria-colindex='8'] button").first.click()
         else:
-            if not await _ok(confirmar,
-                             f"PO {numero_po} — E: Abrir requisição",
-                             f"{count} resultado(s). Vai clicar no botão da PRIMEIRA linha.\n"
-                             "Seletor: 'td[role=gridcell][aria-colindex=8] button' (primeiro)\n\nProsseguir?"):
-                return {"po": numero_po, "status": "CANCELADO", "mensagem": "Cancelado (abrir req)"}
             await page.locator("td[role='gridcell'][aria-colindex='8'] button").first.click()
 
         # ── F. Aguardar botões Order ─────────────────────────────────────
-        if not await _ok(confirmar,
-                         f"PO {numero_po} — F: Aguardar formulário",
-                         "Aguardando os botões 'Order' carregarem.\n"
-                         "Seletor: 'button.order.grn.card-1'\n\nProsseguir?"):
-            return {"po": numero_po, "status": "CANCELADO", "mensagem": "Cancelado (aguardar Order buttons)"}
         order_btns = page.locator("button.order.grn.card-1")
         await order_btns.first.wait_for(state="visible", timeout=TIMEOUT)
         await page.wait_for_timeout(1500)
 
         total_btns = await order_btns.count()
-
-        if not await _ok(confirmar,
-                         f"PO {numero_po} — F: Botões encontrados",
-                         f"{total_btns} botão(ões) 'Order' encontrado(s) na página.\n\n"
-                         "A quantidade está correta?\nProsseguir para processar cada um?"):
-            return {"po": numero_po, "status": "CANCELADO", "mensagem": "Cancelado (conferir botões Order)"}
 
         itens_criados = 0
         po_gerado = numero_po  # valor padrão; atualizado pelo popup de confirmação
@@ -368,12 +249,7 @@ async def _criar_po_par(page, par: dict, vessels: dict, confirmar, escolher, ven
             ativo = await btn.is_enabled()
 
             if texto != "Order" or not ativo:
-                # Botão já processado ("Order (1)") ou desabilitado — pular silenciosamente
-                await _ok(confirmar,
-                          f"PO {numero_po} — Botão {k+1}/{total_btns}: Pular",
-                          f"Botão {k+1}: texto='{texto}'\n\n"
-                          "Este item já possui PO gerada ou está desabilitado.\n"
-                          "Pulando para o próximo. Clique OK para continuar.")
+                # Botão já processado ("Order (1)") ou desabilitado — pula silenciosamente
                 continue
 
             # Variáveis de estado do item — inicializadas aqui para evitar
@@ -381,12 +257,6 @@ async def _criar_po_par(page, par: dict, vessels: dict, confirmar, escolher, ven
             vendor_input = None
 
             # ── G. Clicar em Order ───────────────────────────────────────
-            if not await _ok(confirmar,
-                             f"PO {numero_po} — G: Clicar Order {k+1}/{total_btns}",
-                             f"Vai rolar até o botão {k+1} e clicar nele.\n"
-                             f"Fornecedor que será usado: '{fornecedor_eco}'\n\nProsseguir?"):
-                continue   # pula este item, continua os outros
-
             await btn.scroll_into_view_if_needed()
             await page.wait_for_timeout(800)
             await btn.click()
@@ -396,21 +266,10 @@ async def _criar_po_par(page, par: dict, vessels: dict, confirmar, escolher, ven
             try:
                 confirm_popup = page.locator("kendo-popup button").first
                 await confirm_popup.wait_for(state="visible", timeout=SHORT_WAIT)
-                popup_txt = (await confirm_popup.inner_text()).strip()
-                if not await _ok(confirmar,
-                                 f"PO {numero_po} — H: Popup de confirmação",
-                                 f"Apareceu um popup com botão: '{popup_txt}'\n"
-                                 "Seletor: 'kendo-popup button' (primeiro)\n\n"
-                                 "Vai clicar neste botão. Prosseguir?"):
-                    continue
                 await confirm_popup.click()
                 await page.wait_for_timeout(1000)
             except PWTimeout:
-                if not await _ok(confirmar,
-                                 f"PO {numero_po} — H: Sem popup",
-                                 "Nenhum popup de confirmação apareceu (normal em alguns casos).\n\n"
-                                 "Prosseguir para o formulário do item?"):
-                    continue
+                pass  # sem popup — normal em alguns casos
 
             await page.wait_for_timeout(1500)
 
@@ -435,13 +294,6 @@ async def _criar_po_par(page, par: dict, vessels: dict, confirmar, escolher, ven
                 pass  # usa fornecedor_eco_item = fornecedor_eco
 
             # ── I. Preencher fornecedor ──────────────────────────────────
-            if not await _ok(confirmar,
-                             f"PO {numero_po} — I: Campo fornecedor",
-                             f"Vai localizar o campo de fornecedor:\n"
-                             f"Seletor: 'req-vendor input' (primeiro)\n\n"
-                             f"e digitar caractere a caractere: '{fornecedor_eco_item}'\n\nProsseguir?"):
-                continue
-
             vendor_input = page.locator("req-vendor input").first
             await vendor_input.wait_for(state="visible", timeout=TIMEOUT)
             # Usa termo reduzido (primeiras 2 palavras sig.) para o autocomplete ECO.
@@ -475,46 +327,32 @@ async def _criar_po_par(page, par: dict, vessels: dict, confirmar, escolher, ven
                     if opcao_salva and opcao_salva in opcoes_txt:
                         # Já temos a escolha salva — usa diretamente
                         idx_escolhido = opcoes_txt.index(opcao_salva)
-                        await _ok(confirmar,
-                                  f"PO {numero_po} — J: Fornecedor (memória)",
-                                  f"Usando seleção salva para '{fornecedor_eco_item}':\n\n"
-                                  f"  [{idx_escolhido+1}] {opcao_salva}\n\n"
-                                  "Clique OK para confirmar.")
                     elif n_opts == 1:
-                        # Apenas uma opção — seleciona sem perguntar
+                        # Apenas uma opção — seleciona automaticamente
                         idx_escolhido = 0
-                        await _ok(confirmar,
-                                  f"PO {numero_po} — J: Autocomplete (única opção)",
-                                  f"Uma única sugestão encontrada:\n  {opcoes_txt[0]}\n\n"
-                                  "Vai selecionar esta opção. Clique OK.")
                     else:
-                        # Múltiplas opções sem mapeamento salvo — pergunta ao usuário
+                        # ── CONFIRMAÇÃO 2: múltiplas opções — usuário escolhe ─
                         idx_escolhido = await _escolher_async(
                             escolher,
-                            f"PO {numero_po} — Selecionar fornecedor",
+                            f"PO {numero_po} — Selecionar fornecedor '{fornecedor_eco_item}'",
                             opcoes_txt,
                         )
                         if idx_escolhido >= 0:
-                            # Salva a escolha para próximas execuções
                             vendor_map[chave_forn] = opcoes_txt[idx_escolhido]
                             _salvar_vendor_map(vendor_map)
 
                     if idx_escolhido >= 0:
                         await opts.nth(idx_escolhido).click()
                         await page.wait_for_timeout(500)
-                    else:
-                        await _ok(confirmar,
-                                  f"PO {numero_po} — J: Seleção cancelada",
-                                  "Nenhuma opção selecionada. Continuando sem fornecedor.")
                 else:
                     await _ok(confirmar,
-                              f"PO {numero_po} — J: Sem autocomplete",
-                              "Nenhuma sugestão apareceu para este fornecedor.\n"
+                              f"PO {numero_po} — Fornecedor não encontrado",
+                              "Nenhuma sugestão apareceu no autocomplete.\n"
                               "Verifique se o nome está cadastrado no ECO.\n\n"
                               "Clique OK para continuar sem selecionar.")
             except PWTimeout:
                 await _ok(confirmar,
-                          f"PO {numero_po} — J: Autocomplete não apareceu",
+                          f"PO {numero_po} — Fornecedor não encontrado",
                           f"Timeout aguardando sugestões para '{fornecedor_eco_item}'.\n"
                           "O nome pode estar incorreto ou não cadastrado.\n\n"
                           "Clique OK para continuar sem selecionar.")
@@ -528,32 +366,15 @@ async def _criar_po_par(page, par: dict, vessels: dict, confirmar, escolher, ven
             try:
                 await gl_sel.wait_for(state="visible", timeout=3000)
                 gl_txt = (await gl_sel.inner_text()).strip()
-                if gl_txt:
-                    await _ok(confirmar,
-                              f"PO {numero_po} — K: GL Code já preenchido",
-                              f"O campo GL Code já contém: '{gl_txt}'\nNão será alterado.\n\nClique OK para continuar.")
-                else:
+                if not gl_txt:
                     gl_code = vessels.get(centro_custo.upper()) if centro_custo else None
                     if gl_code:
-                        if not await _ok(confirmar,
-                                         f"PO {numero_po} — K: Preencher GL Code",
-                                         f"GL Code está vazio.\n"
-                                         f"Centro de custo: '{centro_custo}'\n"
-                                         f"GL Code encontrado: '{gl_code}'\n\n"
-                                         "Vai clicar no campo GL Code e digitar o código.\n\nProsseguir?"):
-                            pass  # continua sem preencher
-                        else:
-                            await gl_sel.click()
-                            await page.wait_for_timeout(500)
-                            await page.keyboard.type(str(gl_code))
-                            await page.wait_for_timeout(500)
-                            await page.keyboard.press("Enter")
-                            await page.wait_for_timeout(500)
-                    else:
-                        await _ok(confirmar,
-                                  f"PO {numero_po} — K: GL Code não encontrado",
-                                  f"GL Code vazio e centro de custo '{centro_custo}' não "
-                                  "encontrado na aba 'vessels'.\nCampo será deixado em branco.\n\nClique OK para continuar.")
+                        await gl_sel.click()
+                        await page.wait_for_timeout(500)
+                        await page.keyboard.type(str(gl_code))
+                        await page.wait_for_timeout(500)
+                        await page.keyboard.press("Enter")
+                        await page.wait_for_timeout(500)
             except PWTimeout:
                 pass
 
@@ -565,15 +386,11 @@ async def _criar_po_par(page, par: dict, vessels: dict, confirmar, escolher, ven
                 await price_input.wait_for(state="visible", timeout=3000)
                 current = await price_input.input_value()
                 if current:
-                    await _ok(confirmar,
-                              f"PO {numero_po} — L: Preço já preenchido",
-                              f"O campo de preço já contém: '{current}'\nNão será alterado.\n\nClique OK para continuar.")
                     preco_preenchido = current
                 else:
                     desc_input = page.locator("input[formcontrolname='description']")
                     desc_eco = (await desc_input.input_value()).lower()
                     preco_encontrado = None
-                    item_casado = None
                     for item in itens_po:
                         desc_po = (item.get("descricao") or "").lower()
                         pn_po   = (item.get("pn") or "").lower()
@@ -583,27 +400,10 @@ async def _criar_po_par(page, par: dict, vessels: dict, confirmar, escolher, ven
                             item_casado = item
                             break
                     if preco_encontrado is not None:
-                        if not await _ok(confirmar,
-                                         f"PO {numero_po} — L: Preencher preço",
-                                         f"Campo de preço está vazio.\n"
-                                         f"Descrição no ECO: '{desc_eco[:60]}'\n"
-                                         f"Item casado (PO): '{(item_casado.get('descricao') or '')[:60]}'\n"
-                                         f"Preço a preencher: {preco_encontrado}\n\n"
-                                         "Vai digitar este preço. Prosseguir?"):
-                            pass
-                        else:
-                            await price_input.fill(str(preco_encontrado))
-                            preco_preenchido = str(preco_encontrado)
-                    else:
-                        await _ok(confirmar,
-                                  f"PO {numero_po} — L: Preço não encontrado",
-                                  f"Não foi possível casar nenhum item da PO com a descrição:\n'{desc_eco[:80]}'\n\n"
-                                  "O campo de preço será deixado em branco.\nClique OK para continuar.")
+                        await price_input.fill(str(preco_encontrado))
+                        preco_preenchido = str(preco_encontrado)
             except PWTimeout:
-                await _ok(confirmar,
-                          f"PO {numero_po} — L: Campo preço não encontrado",
-                          "O campo 'input[formcontrolname=price]' não apareceu.\n\n"
-                          "Clique OK para continuar sem preencher o preço.")
+                pass
 
             # ── L2. Quantidade ───────────────────────────────────────────
             qtd_preenchida = ""
@@ -639,23 +439,11 @@ async def _criar_po_par(page, par: dict, vessels: dict, confirmar, escolher, ven
                     qtd_esperada = str(int(q)) if q is not None else None
 
                 if qtd_esperada and current_qty != qtd_esperada:
-                    if not await _ok(confirmar,
-                                     f"PO {numero_po} — L2: Quantidade divergente",
-                                     f"Campo Qty atual : {current_qty or '(vazio)'}\n"
-                                     f"Quantidade da PO: {qtd_esperada}\n\n"
-                                     "Vai substituir pelo valor da PO. Prosseguir?"):
-                        qtd_preenchida = current_qty
-                    else:
-                        await qty_input.triple_click()
-                        await qty_input.fill(qtd_esperada)
-                        qtd_preenchida = qtd_esperada
+                    await qty_input.triple_click()
+                    await qty_input.fill(qtd_esperada)
+                    qtd_preenchida = qtd_esperada
                 else:
                     qtd_preenchida = current_qty
-                    await _ok(confirmar,
-                              f"PO {numero_po} — L2: Quantidade OK",
-                              f"Campo Qty: '{current_qty}'"
-                              + (f" — bate com PO ({qtd_esperada})" if qtd_esperada else " — sem referência")
-                              + "\n\nClique OK para continuar.")
             # Se nenhum seletor encontrou o campo, continua sem alterar (não bloqueia)
 
             # ── L3. Ship VIA ─────────────────────────────────────────────
@@ -664,55 +452,47 @@ async def _criar_po_par(page, par: dict, vessels: dict, confirmar, escolher, ven
             ship_via_alvo  = (melhor.get("ship_via_direto") or "").strip() or SHIP_VIA_MAP.get(tipo_freight.lower())
 
             if ship_via_alvo:
-                if not await _ok(confirmar,
-                                 f"PO {numero_po} — L3: Ship VIA",
-                                 f"Tipo de frete (cotação): '{tipo_freight}'\n"
-                                 f"Ship VIA a selecionar  : '{ship_via_alvo}'\n\n"
-                                 "Vai localizar o campo Ship VIA e selecionar esta opção.\n\nProsseguir?"):
-                    pass  # pula, não bloqueia
-                else:
-                    try:
-                        # 1ª tentativa: get_by_label (mais robusto, independe de estrutura)
-                        sv = page.get_by_label("Ship VIA", exact=False)
-                        await sv.wait_for(state="visible", timeout=2000)
-                        tag = await sv.evaluate("el => el.tagName.toLowerCase()")
-                        if tag == "select":
-                            await sv.select_option(label=ship_via_alvo)
-                        else:
-                            # mat-select: clica no trigger e escolhe mat-option
-                            await sv.click()
-                            await page.wait_for_timeout(400)
-                            opt = page.locator("mat-option").filter(has_text=ship_via_alvo).first
-                            await opt.wait_for(state="visible", timeout=3000)
-                            await opt.click()
+                try:
+                    # 1ª tentativa: get_by_label (mais robusto, independe de estrutura)
+                    sv = page.get_by_label("Ship VIA", exact=False)
+                    await sv.wait_for(state="visible", timeout=2000)
+                    tag = await sv.evaluate("el => el.tagName.toLowerCase()")
+                    if tag == "select":
+                        await sv.select_option(label=ship_via_alvo)
+                    else:
+                        await sv.click()
                         await page.wait_for_timeout(400)
-                    except Exception:
-                        try:
-                            # Fallback: mat-form-field com label "Ship VIA"
-                            sv_field = page.locator("mat-form-field").filter(
-                                has=page.locator("mat-label, label", has_text="Ship VIA")
-                            ).first
-                            sv_trigger = sv_field.locator("mat-select, select").first
-                            await sv_trigger.wait_for(state="visible", timeout=3000)
-                            tag2 = await sv_trigger.evaluate("el => el.tagName.toLowerCase()")
-                            if tag2 == "select":
-                                await sv_trigger.select_option(label=ship_via_alvo)
-                            else:
-                                await sv_trigger.click()
-                                await page.wait_for_timeout(400)
-                                opt2 = page.locator("mat-option").filter(has_text=ship_via_alvo).first
-                                await opt2.wait_for(state="visible", timeout=3000)
-                                await opt2.click()
+                        opt = page.locator("mat-option").filter(has_text=ship_via_alvo).first
+                        await opt.wait_for(state="visible", timeout=3000)
+                        await opt.click()
+                    await page.wait_for_timeout(400)
+                except Exception:
+                    try:
+                        # Fallback: mat-form-field com label "Ship VIA"
+                        sv_field = page.locator("mat-form-field").filter(
+                            has=page.locator("mat-label, label", has_text="Ship VIA")
+                        ).first
+                        sv_trigger = sv_field.locator("mat-select, select").first
+                        await sv_trigger.wait_for(state="visible", timeout=3000)
+                        tag2 = await sv_trigger.evaluate("el => el.tagName.toLowerCase()")
+                        if tag2 == "select":
+                            await sv_trigger.select_option(label=ship_via_alvo)
+                        else:
+                            await sv_trigger.click()
                             await page.wait_for_timeout(400)
-                        except Exception as _sv_err:
-                            await _ok(confirmar,
-                                      f"PO {numero_po} — L3: Ship VIA não preenchido",
-                                      f"Não foi possível selecionar '{ship_via_alvo}'.\n"
-                                      f"Erro: {str(_sv_err)[:120]}\n\n"
-                                      "Preencha manualmente e clique OK para continuar.")
+                            opt2 = page.locator("mat-option").filter(has_text=ship_via_alvo).first
+                            await opt2.wait_for(state="visible", timeout=3000)
+                            await opt2.click()
+                        await page.wait_for_timeout(400)
+                    except Exception as _sv_err:
+                        await _ok(confirmar,
+                                  f"PO {numero_po} — Ship VIA não preenchido",
+                                  f"Não foi possível selecionar '{ship_via_alvo}'.\n"
+                                  f"Erro: {str(_sv_err)[:120]}\n\n"
+                                  "Preencha manualmente e clique OK para continuar.")
             else:
                 await _ok(confirmar,
-                          f"PO {numero_po} — L3: Ship VIA — preencher manualmente",
+                          f"PO {numero_po} — Ship VIA — preencher manualmente",
                           f"Tipo de frete '{tipo_freight or '(não informado)'}' não tem mapeamento "
                           "automático para Ship VIA.\n\n"
                           "Opções disponíveis no ECO:\n"
@@ -763,11 +543,6 @@ async def _criar_po_par(page, par: dict, vessels: dict, confirmar, escolher, ven
                         po_gerado = po_gerado_popup
                 except Exception:
                     pass
-                await _ok(confirmar,
-                          f"PO {numero_po} — Item {k+1} salvo",
-                          f"PO gerada com sucesso!\n\n"
-                          f"  PO Number : {po_gerado}\n\n"
-                          "Clique OK para fechar o popup e continuar.")
                 await close_btn.click()
                 await page.wait_for_timeout(1000)
             except PWTimeout:
@@ -783,13 +558,6 @@ async def _criar_po_par(page, par: dict, vessels: dict, confirmar, escolher, ven
             po_gerado = (await po_span.inner_text()).strip()
         except PWTimeout:
             po_gerado = numero_po
-
-        await _ok(confirmar,
-                  f"PO {numero_po} — Concluído",
-                  f"Processamento finalizado!\n\n"
-                  f"  PO gerada  : {po_gerado}\n"
-                  f"  Itens OK   : {itens_criados}\n\n"
-                  "Clique OK para continuar para a próxima PO.")
 
         return {
             "po": po_gerado,

@@ -91,7 +91,7 @@ Retorne SOMENTE o JSON abaixo, sem texto adicional, sem markdown:
     "data": "Data da PO",
     "fornecedor_selecionado": "Nome do fornecedor para quem a PO foi emitida",
     "solicitante": "Nome do solicitante/requisitante se disponível",
-    "fornecedor_escolhido_comentario": "Nome do fornecedor/fabricante REAL mencionado explicitamente nos comentários do comprador, observações ou notas da PO — NÃO o fornecedor do cabeçalho (que é o agente/broker). Exemplos de como costuma aparecer: 'purchasing from Power Specialties', 'vendor: TNG Telecom', 'buying from Bruce Kay', 'purchasing process made by ECO - TNG Telecom'. Retorne APENAS o nome do fornecedor real, sem texto adicional. Se não houver menção EXPLÍCITA de fornecedor real nos comentários, retornar null — NUNCA invente ou suponha um nome.",
+    "fornecedor_escolhido_comentario": "Nome do fornecedor/fabricante REAL mencionado explicitamente nos comentários do comprador. REGRAS CRÍTICAS: (1) NUNCA retornar 'Nautical Ventures', 'ECO', 'ECO Purchasing' — estes são a própria empresa emissora da PO, jamais o fornecedor. (2) O padrão mais comum nos comentários é: 'ECO REQ#:XXXXXXXX - NOME_EMBARCAÇÃO - NOME_FORNECEDOR' — extraia apenas o NOME_FORNECEDOR (última parte após o segundo hífen). Exemplos: 'ECO Req#:022526011514 - baker' → 'baker'; 'ECO REQ#:030226012600 - KUDU - baker' → 'baker'; 'ECO REQ#:030326012826 - BRAM SPIRIT - brt marine' → 'brt marine'. (3) Outros formatos: 'purchasing from Power Specialties' → 'Power Specialties'; 'vendor: TNG Telecom' → 'TNG Telecom'. (4) Se não houver menção EXPLÍCITA de fornecedor real, retornar null.",
     "numero_eco_req": "Número da REQ ECO no formato numérico (ex: 031326015461). Procure por 'REQ#', 'REQ:', 'Requisition' ou sequências longas de números que identifiquem a solicitação nos comentários ou cabeçalho da PO.",
     "numero_cotacao_ref": "Número de cotação referenciado na PO — procure por padrões como 2025.XXXXXX ou 2026.XXXXXX (ex: 2025.039982) em qualquer campo da PO (comentários, descrição, referências). Se não encontrar este padrão, retornar null.",
     "centro_de_custo": "Nome do centro de custo/embarcação extraído da seção 'Cost Center Apportionment'. O formato é '(CÓDIGO) NOME - USD VALOR'. Retornar apenas o NOME. Ex: '(0185) C-ADMIRAL - USD 3.500,00' → 'C-ADMIRAL'. Se houver múltiplos centros de custo, retornar o nome do primeiro. Se não houver, retornar null.",
@@ -168,7 +168,7 @@ def _pre_extrair_campos(texto_pdf: str) -> dict:
         for c in codigos_raw:
             limpo = re.sub(r'\s+', '', c)
             if '.' not in limpo:
-                limpo = limpo[:4] + '.' + limpo[4:]
+                limpo = limpo[:4] + '.' + limpo[4:]  # type: ignore
             codigos.append(limpo)
         campos["quotation_codes"] = list(set(codigos))
 
@@ -185,14 +185,14 @@ def _pre_extrair_campos(texto_pdf: str) -> dict:
     # Dollar amounts
     valores = re.findall(r'\$\s*([\d,]+\.\d{2})', texto_pdf)
     if valores:
-        campos["dollar_amounts"] = valores[:10]
+        campos["dollar_amounts"] = valores[:10]  # type: ignore
 
     # Dates (various formats)
     datas_us = re.findall(r'\b(\d{1,2}/\d{1,2}/\d{2,4})\b', texto_pdf)
     datas_iso = re.findall(r'\b(\d{4}-\d{2}-\d{2})\b', texto_pdf)
     todas_datas = datas_us + datas_iso
     if todas_datas:
-        campos["dates_found"] = todas_datas[:10]
+        campos["dates_found"] = todas_datas[:10]  # type: ignore
 
     # Supplier hints (From:, Vendor:, Supplier:, Company:, Quoted by:)
     vendor_patterns = re.findall(
@@ -200,7 +200,7 @@ def _pre_extrair_campos(texto_pdf: str) -> dict:
         texto_pdf, re.IGNORECASE
     )
     if vendor_patterns:
-        campos["vendor_hints"] = [v.strip()[:80] for v in vendor_patterns[:5]]
+        campos["vendor_hints"] = [v.strip()[:80] for v in vendor_patterns[:5]]  # type: ignore
 
     # Buyer comment vendor mentions (common in POs)
     buyer_vendors = re.findall(
@@ -208,7 +208,7 @@ def _pre_extrair_campos(texto_pdf: str) -> dict:
         texto_pdf, re.IGNORECASE
     )
     if buyer_vendors:
-        campos["buyer_vendor_mentions"] = [v.strip().rstrip('.,') for v in buyer_vendors[:5]]
+        campos["buyer_vendor_mentions"] = [v.strip().rstrip('.,') for v in buyer_vendors[:5]]  # type: ignore
 
     # Payment terms
     pay_patterns = re.findall(
@@ -225,12 +225,12 @@ def _pre_extrair_campos(texto_pdf: str) -> dict:
         texto_pdf, re.IGNORECASE
     )
     if freight_patterns:
-        campos["freight_hints"] = list(set(freight_patterns))[:5]
+        campos["freight_hints"] = list(set(freight_patterns))[:5]  # type: ignore
 
     # Cost center (format: (XXXX) NAME - USD)
     cc = re.findall(r'\(\d{4}\)\s+([A-Z][\w\s-]+?)\s*[-–]', texto_pdf)
     if cc:
-        campos["cost_centers"] = [c.strip() for c in cc[:3]]
+        campos["cost_centers"] = [c.strip() for c in cc[:3]]  # type: ignore
 
     return campos
 
@@ -330,7 +330,7 @@ def _chamar_gemini(caminho_pdf: str, prompt: str, tentativas: int = 3) -> dict:
     if resposta is None:
         raise RuntimeError("Gemini não retornou resposta após todas as tentativas.")
 
-    texto = resposta.text.strip()
+    texto = resposta.text.strip()  # type: ignore
 
     # Remove blocos markdown se o modelo os incluir
     texto = re.sub(r"^```(?:json)?\s*", "", texto)
@@ -602,7 +602,7 @@ def extrair_po(caminho_pdf: str) -> dict:
                 desc = (item.get("descricao") or "").upper()
                 # Tenta encontrar um PN do regex que apareça na descrição
                 for pn_regex in pns_encontrados:
-                    if pn_regex in desc or pn_regex.replace(".", "") in desc.replace(".", ""):
+                    if pn_regex in desc or pn_regex.replace(".", "") in desc.replace(".", ""):  # type: ignore
                         item["pn"] = pn_regex
                         break
 

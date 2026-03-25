@@ -17,7 +17,7 @@ from playwright.async_api import async_playwright, TimeoutError as PWTimeout
 import logging
 
 from config import SHIP_VIA_MAP, GL_CODE_PLANILHA
-from utils import numero_cotacao as _numero_cotacao_util, norm_vendor as _norm_vendor
+from utils import quotation_code as _quotation_code_util, norm_vendor as _norm_vendor
 
 logger = logging.getLogger(__name__)
 
@@ -92,7 +92,7 @@ def _salvar_vendor_map(vendor_map: dict):
 # ─────────────────────────────────────────────────────────────────────
 
 def _numero_cotacao(analise: dict) -> str:
-    return _numero_cotacao_util(analise) or ""
+    return _quotation_code_util(analise) or ""
 
 
 def _termo_busca_vendor(nome: str) -> str:
@@ -191,8 +191,8 @@ async def _criar_po_par(page, par: dict, vessels: dict, confirmar, escolher, ven
     numero_po     = po_data.get("numero_po") or "?"
     centro_custo  = (po_data.get("centro_de_custo") or po_data.get("solicitante") or "").strip()
     forn_extraido = (po_data.get("fornecedor_escolhido_comentario") or "").strip()
-    # NÃO usar melhor.get("nome") — pode ser fornecedor diferente do item atual
-    fornecedor_eco = forn_extraido or ""
+    # Fallback: usa o Supplier da col F (melhor_preco.nome) quando forn_extraido estiver vazio
+    fornecedor_eco = forn_extraido or (melhor.get("nome") or "")
     itens_po      = po_data.get("itens") or []
 
     if not numero_cot:

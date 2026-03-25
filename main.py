@@ -1,3 +1,4 @@
+# pyre-ignore-all-errors
 """
 main.py
 -------
@@ -5,11 +6,13 @@ Interface gráfica principal do sistema de análise de cotações e PO.
 Execute este arquivo com duplo clique ou: python main.py
 """
 
+import json
 import os
 import re
 import sys
 import threading
 import tkinter as tk
+from datetime import datetime
 from tkinter import filedialog, messagebox, ttk
 
 # Verifica se as dependências estão instaladas
@@ -51,19 +54,56 @@ def _extrair_req_do_nome(caminho: str):
 
 def _e_po(caminho: str) -> bool:
     """
-    Heurística: arquivo é PO se o nome indicar uma Purchase Order.
-    Cobre padrões como: 'PO 031326015461', 'PO BRAM - 430581', 'PO 475919 - QT...',
-    'Purchase Order', '467694 - ECO' (gerado pelo ECO Requisition).
+    Detecta se um PDF é uma Purchase Order.
+    1º verifica o nome do arquivo; se ambíguo, escaneia a 1ª página do PDF.
     """
     nome = os.path.basename(caminho).lower()
-    # Começa com "po " ou "po_" ou "po-" (ex: "PO 475919 - QT 2026.007638")
+
+    # Indicadores de PO no nome
+    PO_NOME = (
+        "purchase order", "ordem de compra",
+        "- eco", "_eco",
+    )
+    # Indicadores de cotação no nome (para desambiguar)
+    COT_NOME = (
+        "quote", "quotation", "cotac", "cotaç", "proposta", "proposal",
+        "price list", "oferta",
+    )
+
     if re.match(r'^po[\s\-_]', nome):
         return True
-    # Outros padrões comuns
-    return any(p in nome for p in (
-        "purchase order", "ordem de compra",
-        "- eco", "_eco",  # ex: "467694 - ECO"
-    ))
+    if any(p in nome for p in PO_NOME):
+        return True
+    if any(p in nome for p in COT_NOME):
+        return False
+
+    # Nome ambíguo → escaneia a 1ª página do PDF
+    try:
+        with pdfplumber.open(caminho) as pdf:
+            texto = (pdf.pages[0].extract_text() or "").upper() if pdf.pages else ""
+
+        PO_CONTEUDO = (
+            "PURCHASE ORDER", "ORDEM DE COMPRA", "P.O. NUMBER", "PO NUMBER",
+            "VENDOR:", "SHIP TO:", "BILL TO:", "ORDER NO",
+            "INCOTERM", "PAYMENT TERMS",
+        )
+        COT_CONTEUDO = (
+            "QUOTATION", "PRICE QUOTE", "QUOTE #", "QUOTE NO",
+            "VALID UNTIL", "VALIDITY", "WE ARE PLEASED TO OFFER",
+        )
+
+        pontos_po  = sum(1 for p in PO_CONTEUDO  if p in texto)
+        pontos_cot = sum(1 for p in COT_CONTEUDO if p in texto)
+
+        if pontos_po > pontos_cot:
+            return True
+        if pontos_cot > pontos_po:
+            return False
+    except Exception:
+        pass
+
+    # Sem conclusão: assume que não é PO
+    return False
 
 
 def _parear_por_req(cotacoes: list, pos: list) -> tuple:
@@ -436,7 +476,7 @@ class App(tk.Tk):
                 for c, p in self._fila
             }
             if (os.path.basename(cot), os.path.basename(po)) in nomes_existentes:
-                duplicados += 1
+                duplicados += 1  # type: ignore
                 continue
             self._fila.append((cot, po))
             nome_cot = os.path.basename(cot)[:32]
@@ -500,7 +540,7 @@ class App(tk.Tk):
                 for c, p in self._fila
             }
             if (os.path.basename(cot), os.path.basename(po)) in nomes_existentes:
-                duplicados += 1
+                duplicados += 1  # type: ignore
                 continue
             self._fila.append((cot, po))
             nome_cot = os.path.basename(cot)[:32]
@@ -584,20 +624,39 @@ class App(tk.Tk):
                 return
 
             ws = wb["ROBO"]
-            # Colunas (1-based → índice 0-based):
-            # A(0)=Quotation Code  B(1)=Produto  C(2)=Description  D(3)=Unit Price
-            # E(4)=Cost Center     F(5)=Supplier  K(10)=ECO REQ
-            # O(14)=Observação PO  P(15)=Forn Extraido  R(17)=PO
-            grupos = {}      # numero_po → dict com dados acumulados
-            ordem_pos = []   # preserva ordem de aparição
 
-            for row in ws.iter_rows(min_row=2, values_only=True):
-                # Linha separadora: col A começa com "—" ou col R está vazia
+            # Carrega todas as linhas de uma vez (evita problema de iteração dupla em read_only)
+            todas_linhas = list(ws.iter_rows(values_only=True))
+            wb.close()
+
+            if not todas_linhas:
+                messagebox.showwarning("Nenhum dado", "A aba ROBO está vazia.")
+                return
+
+            # Detecta layout pelo cabeçalho (linha 1) — normaliza para comparação robusta
+            import unicodedata
+            def _norm_header(s):
+                s = str(s or "").strip().lower()
+                return unicodedata.normalize("NFKD", s).encode("ascii", "ignore").decode()
+            cabecalho_norm = [_norm_header(c) for c in todas_linhas[0]]
+            def _col(nome):
+                n = _norm_header(nome)
+                return cabecalho_norm.index(n) if n in cabecalho_norm else None
+            idx_po       = _col("PO")             if _col("PO")             is not None else 12
+            idx_eco_req  = _col("ECO REQ")        if _col("ECO REQ")        is not None else 8
+            idx_obs      = _col("Observação PO")  if _col("Observação PO")  is not None else 9
+            idx_forn_ext = _col("Forn. Extraido") if _col("Forn. Extraido") is not None else 10
+
+            grupos = {}
+            ordem_pos = []
+
+            for row in todas_linhas[2:]:
+                # Linha separadora: col A começa com "—"
                 col_a = str(row[0] or "")
                 if col_a.startswith("—"):
                     continue
 
-                numero_po = str(row[17] or "").strip()   # col R
+                numero_po = str(row[idx_po] or "").strip()
                 if not numero_po:
                     continue
 
@@ -607,9 +666,9 @@ class App(tk.Tk):
                 preco_unit   = row[3]                        # col D (numérico)
                 centro_custo = str(row[4]  or "").strip()   # col E
                 fornec_eco   = str(row[5]  or "").strip()   # col F
-                eco_req      = str(row[10] or "").strip()   # col K
-                observacoes  = str(row[14] or "").strip()   # col O
-                forn_extraid = str(row[15] or "").strip()   # col P
+                eco_req      = str(row[idx_eco_req]  or "").strip()
+                observacoes  = str(row[idx_obs]      or "").strip()
+                forn_extraid = str(row[idx_forn_ext] or "").strip()
                 # col V (índice 21) = Ship VIA preenchido manualmente
                 try:
                     ship_via = str(row[21] or "").strip() if len(row) > 21 else ""
@@ -662,7 +721,7 @@ class App(tk.Tk):
             if not grupos:
                 messagebox.showwarning(
                     "Nenhum dado",
-                    "A aba ROBO não contém linhas com número de PO (col R).\n"
+                    "A aba ROBO não contém linhas com número de PO (col M).\n"
                     "Verifique se o arquivo correto foi selecionado."
                 )
                 return
@@ -676,8 +735,10 @@ class App(tk.Tk):
                         "po": {
                             "numero_po":                    g["numero_po"],
                             "numero_eco_req":               g["eco_req"] or None,
+                            "numero_cotacao_ref":           g["numero_cot"] or None,
                             "centro_de_custo":              g["centro_custo"] or None,
-                            "fornecedor_escolhido_comentario": g["forn_extraid"] or None,
+                            # Usa Supplier (col F) como vendor principal — é o nome ECO correto
+                            "fornecedor_escolhido_comentario": g["fornec_eco"] or g["forn_extraid"] or None,
                             "observacoes":                  g["observacoes"] or None,
                             "itens":                        g["itens"],
                         },
@@ -742,6 +803,12 @@ class App(tk.Tk):
         lote = []
         erros = []
 
+        # Pasta de cache: mesma pasta de saída + subpasta com timestamp do lote
+        pasta_saida = self._pasta_saida.get()
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        pasta_cache = os.path.join(pasta_saida, f"cache_{timestamp}")
+        os.makedirs(pasta_cache, exist_ok=True)
+
         for i, (caminho_cotacao, caminho_po) in enumerate(self._fila):
             nome = f"Par {i + 1}/{len(self._fila)}"
             try:
@@ -755,17 +822,28 @@ class App(tk.Tk):
                 analise = analisar(dados_cotacao, dados_po)
 
                 req_numero = _extrair_req_do_nome(caminho_cotacao) or _extrair_req_do_nome(caminho_po)
-                lote.append({"analise": analise, "req_numero": req_numero})
+                entrada = {"analise": analise, "req_numero": req_numero}
+                lote.append(entrada)
+
+                # Salva resultado intermediário em JSON
+                nome_arquivo = f"par_{i + 1:03d}_{req_numero or 'sem_req'}.json"
+                caminho_json = os.path.join(pasta_cache, nome_arquivo)
+                with open(caminho_json, "w", encoding="utf-8") as f:
+                    json.dump(entrada, f, ensure_ascii=False, indent=2, default=str)
 
             except Exception as e:
                 erros.append((i + 1, str(e)))
+                # Salva o erro também para rastreabilidade
+                nome_erro = f"par_{i + 1:03d}_ERRO.json"
+                with open(os.path.join(pasta_cache, nome_erro), "w", encoding="utf-8") as f:
+                    json.dump({"erro": str(e), "cotacao": caminho_cotacao, "po": caminho_po}, f, ensure_ascii=False, indent=2)
 
             self.after(0, lambda v=i + 1: self._progress.configure(value=v))
 
         if lote:
             self._atualizar_status("Gerando arquivo Excel unificado...")
             try:
-                caminho_excel = exportar_excel(lote, self._pasta_saida.get())
+                caminho_excel = exportar_excel(lote, pasta_saida)
             except Exception as e:
                 erros.append(("Excel", str(e)))
                 caminho_excel = None

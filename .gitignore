@@ -17,3 +17,5 @@ Brazil Vessels - GL CODE.xlsx
 # Playwright
 node_modules/
 playwright-report/
+cache_*/
+~$*

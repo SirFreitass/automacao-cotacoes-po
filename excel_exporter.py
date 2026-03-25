@@ -83,20 +83,69 @@ def _carregar_vendor_map_json() -> dict:
         return {}
 
 
-def _buscar_fornecedor_nas_obs(observacoes: str) -> str:
+# Vendors que são a própria empresa emissora — nunca são o fornecedor real
+_VENDOR_BLACKLIST = {
+    "nauticalventures", "nautical ventures", "eco", "ecopurchasing",
+    "eco purchasing", "navship", "chouest",
+}
+
+def _e_vendor_invalido(nome: str) -> bool:
+    """Retorna True se o nome for um broker/empresa emissora, não um fornecedor real."""
+    return _norm_vendor(nome) in _VENDOR_BLACKLIST
+
+
+def _extrair_vendor_do_comentario(observacoes: str) -> str:
     """
-    Procura nomes de fornecedores conhecidos dentro do texto das observações da PO.
-    Busca em duas fontes: Tabela Forn (Req-o-matic) e vendor_map.json.
-    Retorna o nome encontrado (prefere o mais longo/específico).
+    Extrai o vendor do padrão dos buyer comments da ECO:
+    'ECO REQ#:XXXXXXXX - VESSEL NAME - vendor name'
+    Retorna o nome do vendor (última parte após o último hífen antes de palavras-chave).
     """
     if not observacoes:
         return ""
+    # Padrão: ECO REQ#:... - VESSEL - vendor (pega tudo após o último " - " antes de "." ou "\n" ou fim)
+    match = re.search(
+        r'ECO\s+REQ#?:\s*\d+\s*-\s*[^-\n]+?-\s*([^.\n,]+)',
+        observacoes, re.IGNORECASE
+    )
+    if match:
+        vendor = match.group(1).strip()
+        if vendor and not _e_vendor_invalido(vendor):
+            return vendor
+    # Padrão simples: apenas "ECO REQ#:... - vendor" (sem vessel)
+    match = re.search(
+        r'ECO\s+REQ#?:\s*\d+\s*-\s*([^.\n,]+)',
+        observacoes, re.IGNORECASE
+    )
+    if match:
+        vendor = match.group(1).strip()
+        if vendor and not _e_vendor_invalido(vendor):
+            return vendor
+    return ""
+
+
+def _buscar_fornecedor_nas_obs(observacoes: str) -> str:
+    """
+    Procura nomes de fornecedores conhecidos dentro do texto das observações da PO.
+    1. Tenta regex no padrão ECO REQ#:... - VESSEL - vendor
+    2. Busca na Tabela Forn (Req-o-matic)
+    3. Busca no vendor_map.json
+    """
+    if not observacoes:
+        return ""
+
+    # 1. Regex no padrão ECO buyer comments
+    vendor_regex = _extrair_vendor_do_comentario(observacoes)
+    if vendor_regex:
+        # Tenta fazer lookup do nome curto extraído
+        lookup = _lookup_fornecedor_eco(vendor_regex)
+        return lookup or vendor_regex
+
     _carregar_tabela_forn()
     obs_norm = _norm_vendor(observacoes)
     melhor_nome = ""
     melhor_tam = 0
 
-    # 1. Busca na Tabela Forn do Req-o-matic
+    # 2. Busca na Tabela Forn do Req-o-matic
     for k, v in _TABELA_FORN.items():
         k_norm = _norm_vendor(k)
         if k_norm and len(k_norm) >= 4 and k_norm in obs_norm:
@@ -104,7 +153,7 @@ def _buscar_fornecedor_nas_obs(observacoes: str) -> str:
                 melhor_tam = len(k_norm)
                 melhor_nome = v
 
-    # 2. Busca no vendor_map.json (chave = nome curto, valor = nome ECO completo)
+    # 3. Busca no vendor_map.json
     for k, v in _carregar_vendor_map_json().items():
         k_norm = _norm_vendor(k)
         if k_norm and len(k_norm) >= 4 and k_norm in obs_norm:
@@ -123,26 +172,40 @@ def _palavras_sig(s: str):
 def _lookup_fornecedor_eco(nome_extraido: str) -> str:
     """
     Dado o nome extraído dos comentários da PO, retorna o nome do
-    fornecedor no sistema ECO (Tabela Forn → NomeSistema).
-    Busca em 3 níveis:
-      1. Exata normalizada (sem separadores): "kmar" == "k-mar" == "K MAR"
-      2. Substring normalizada: "kmar" encontra "kmarsupply"
-      3. Palavras significativas com score ≥ 50%
+    fornecedor no sistema ECO.
+    Ordem de prioridade:
+      0. vendor_map.json (curado manualmente — tem precedência absoluta)
+      1. Tabela Forn exata normalizada: "kmar" == "k-mar" == "K MAR"
+      2. Tabela Forn substring normalizada
+      3. Tabela Forn palavras significativas com score ≥ 50%
     """
     if not nome_extraido:
         return ""
-    _carregar_tabela_forn()
+
     norm_entrada = _norm_vendor(nome_extraido)
-    # 1. Busca exata normalizada
+
+    # 0. vendor_map.json — prioridade máxima
+    vendor_map = _carregar_vendor_map_json()
+    for k, v in vendor_map.items():
+        if _norm_vendor(k) == norm_entrada:
+            return v
+    for k, v in vendor_map.items():
+        norm_k = _norm_vendor(k)
+        if norm_k and len(norm_k) >= 4 and (norm_k in norm_entrada or norm_entrada in norm_k):
+            return v
+
+    _carregar_tabela_forn()
+
+    # 1. Tabela Forn — exata normalizada
     for k, v in _TABELA_FORN.items():
         if _norm_vendor(k) == norm_entrada:
             return v
-    # 2. Busca por substring normalizada (entrada contém chave ou vice-versa)
+    # 2. Tabela Forn — substring normalizada
     for k, v in _TABELA_FORN.items():
         norm_k = _norm_vendor(k)
         if norm_k and norm_entrada and (norm_k in norm_entrada or norm_entrada in norm_k):
             return v
-    # 3. Busca por palavras significativas com score ≥ 50%
+    # 3. Tabela Forn — palavras significativas com score ≥ 50%
     palavras_entrada = _palavras_sig(nome_extraido.lower().strip())
     if not palavras_entrada:
         return ""
@@ -578,11 +641,14 @@ def _aba_para_robo(wb, analise, prefixo):
     # Ex: "(0185) C-ADMIRAL - USD 3.500,00" → "C-ADMIRAL"
     centro_de_custo = po.get("centro_de_custo") or po.get("solicitante") or ""
     forn_extraido = po.get("fornecedor_escolhido_comentario") or ""
+    # Descarta nomes inválidos (broker/empresa emissora)
+    if _e_vendor_invalido(forn_extraido):
+        forn_extraido = ""
     observacoes = po.get("observacoes") or ""
 
     # Fallback em cadeia para encontrar o fornecedor:
-    # 1. fornecedor_escolhido_comentario (Gemini)
-    # 2. Busca de nomes conhecidos nas observações da PO
+    # 1. fornecedor_escolhido_comentario (Gemini) — já filtrado pela blacklist
+    # 2. Busca de nomes conhecidos nas observações da PO (inclui regex ECO REQ# pattern)
     # 3. Fornecedor do melhor preço da cotação
     if not forn_extraido:
         forn_extraido = _buscar_fornecedor_nas_obs(observacoes)
@@ -608,9 +674,8 @@ def _aba_para_robo(wb, analise, prefixo):
     # Cabeçalhos exatamente como na planilha pos
     colunas = [
         "Quotation Code", "Produto", "Description", "Unit Price",
-        "Cost Center Desc", "Supplier", "Freight", "Status", "OBS",
-        "ID+QUOTE", "ECO REQ", "Quote+PO", "Coluna3", "Coluna4",
-        "Observação PO", "Forn. Extraido", "Forn Extraído ECO", "PO", "Coluna5",
+        "Cost Center Desc", "Supplier", "Freight", "OBS",
+        "ECO REQ", "Observação PO", "Forn. Extraido", "Forn Extraído ECO", "PO", "Coluna5",
     ]
 
     # Cabeçalho especial com cor diferente para destacar que é a aba de importação
@@ -623,7 +688,7 @@ def _aba_para_robo(wb, analise, prefixo):
     ws.row_dimensions[1].height = 32
 
     # Instrução na linha 2
-    ws.merge_cells("A2:S2")
+    ws.merge_cells("A2:N2")
     inst = ws["A2"]
     inst.value = (
         "⬇  Copie as linhas abaixo e cole na aba 'pos' do Req-o-matic para registrar no robô  ⬇"
@@ -644,12 +709,12 @@ def _aba_para_robo(wb, analise, prefixo):
         descricao = item.get("descricao") or ""
         preco_unit = item.get("preco_unitario")
 
-        # Vendor por item: usa fornecedor_item se disponível, senão usa o vendor geral da PO
+        # Vendor por item: usa fornecedor_item APENAS se tiver match no vendor_map,
+        # caso contrário usa o vendor geral da PO (evita broker do cabeçalho sobrescrever)
         forn_it = (item.get("fornecedor_item") or "").strip()
-        fornecedor_eco_item = _lookup_fornecedor_eco(forn_it) or forn_it or fornecedor_eco
+        forn_it_lookup = _lookup_fornecedor_eco(forn_it)
+        fornecedor_eco_item = forn_it_lookup or fornecedor_eco
 
-        id_quote = f"{pn_interno}{numero_cot}"
-        quote_po = f"{numero_po}{numero_cot}"
         coluna5 = f"PO:{numero_po} - {numero_cot} - {centro_de_custo}"
 
         dados = [
@@ -657,37 +722,31 @@ def _aba_para_robo(wb, analise, prefixo):
             pn_interno,           # B  Produto
             descricao,            # C  Description
             preco_unit,           # D  Unit Price
-            centro_de_custo,      # E  Cost Center Desc  (ex: "C-ADMIRAL")
-            fornecedor_eco_item,  # F  Supplier  (por item se disponível, senão PO geral)
-            freight_robo,     # G  Freight
-            "",               # H  Status (VBA preenche)
-            obs_alertas,      # I  OBS
-            id_quote,         # J  ID+QUOTE
-            eco_req,          # K  ECO REQ
-            quote_po,         # L  Quote+PO
-            "",               # M  Coluna3
-            "",               # N  Coluna4
-            observacoes,      # O  Observação PO
-            forn_extraido,    # P  Forn. Extraido
-            "",               # Q  Forn Extraído ECO (VLOOKUP do Req-o-matic)
-            numero_po,        # R  PO
-            coluna5,          # S  Coluna5
+            centro_de_custo,      # E  Cost Center Desc
+            fornecedor_eco_item,  # F  Supplier
+            freight_robo,         # G  Freight
+            obs_alertas,          # H  OBS
+            eco_req,              # I  ECO REQ
+            observacoes,          # J  Observação PO
+            forn_extraido,        # K  Forn. Extraido
+            "",                   # L  Forn Extraído ECO (VLOOKUP do Req-o-matic)
+            numero_po,            # M  PO
+            coluna5,              # N  Coluna5
         ]
 
         cor = COR_LINHA_PAR if i % 2 == 0 else COR_BRANCO
         cor_obs = COR_AVISO if obs_alertas else cor
 
         for col, val in enumerate(dados, 1):
-            cf = cor_obs if col == 9 and obs_alertas else cor
+            cf = cor_obs if col == 8 and obs_alertas else cor
             fmt = '"$"#,##0.0000' if col == 4 else None
             _celula(ws, linha, col, val, cf, formato=fmt)
         ws.row_dimensions[linha].height = 18
 
-    # Larguras fixas para refletir a planilha pos
+    # Larguras das colunas
     larguras = {
         "A": 16, "B": 14, "C": 45, "D": 14, "E": 20, "F": 28,
-        "G": 16, "H": 14, "I": 35, "J": 28, "K": 18, "L": 28,
-        "M": 10, "N": 10, "O": 45, "P": 25, "Q": 25, "R": 12, "S": 40,
+        "G": 16, "H": 35, "I": 18, "J": 45, "K": 25, "L": 25, "M": 12, "N": 40,
     }
     for col_letter, w in larguras.items():
         ws.column_dimensions[col_letter].width = w

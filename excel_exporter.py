@@ -17,36 +17,11 @@ from openpyxl import Workbook, load_workbook
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 from openpyxl.utils import get_column_letter
 from config import ROBO_PLANILHA, SHIP_VIA_MAP
-from utils import norm_pn as _norm_pn, norm_vendor as _norm_vendor, numero_cotacao as _numero_cotacao, quotation_code as _quotation_code, normalizar_freight_robo as _normalizar_freight_robo
+from utils import norm_pn as _norm_pn, norm_vendor as _norm_vendor, numero_cotacao as _numero_cotacao, quotation_code as _quotation_code, normalizar_freight_robo as _normalizar_freight_robo, normalizar_uom as _normalizar_uom
 
 logger = logging.getLogger(__name__)
 
-# Normalização de UOM — variações comuns → nome padrão do ECO
-_UOM_NORM = {
-    "ea": "each", "pc": "each", "pcs": "each", "piece": "each",
-    "unit": "each", "un": "each", "und": "each", "units": "each",
-    "bx": "box", "cs": "case",
-    "ft": "feet", "foot": "feet",
-    "gal": "gallon", "gallons": "gal",
-    "hr": "hour", "hrs": "hour",
-    "lbs": "lb", "pound": "lb", "pounds": "lb",
-    "ltr": "liter", "l": "liter", "litre": "liter",
-    "m": "meter", "mtr": "meter", "metre": "meter",
-    "mi": "miles", "mile": "miles",
-    "mo": "month", "months": "month",
-    "ounce": "oz", "ounces": "oz",
-    "pk": "pack", "pr": "pair", "pairs": "pair",
-    "qt": "quart", "dz": "dozen", "doz": "dozen",
-    "sqft": "sq ft", "square foot": "sq ft", "square feet": "sq ft",
-    "tons": "ton", "wk": "week", "weeks": "week",
-    "days": "day", "kit": "set", "lot": "set",
-    "cubic yard": "cu yd",
-}
-
-def _normalizar_uom(uom_raw: str) -> str:
-    """Normaliza UOM extraída para o nome padrão do ECO Requisition."""
-    u = (uom_raw or "each").strip().lower()
-    return _UOM_NORM.get(u, u)
+# _normalizar_uom importada de utils.py — mapa canônico único
 
 
 # --- Lookup de fornecedores via Tabela Forn do Req-o-matic ---
@@ -960,9 +935,13 @@ def _aba_robo_consolidada(wb, lote):
         numero_cot   = _quotation_code(analise)
         numero_po    = po.get("numero_po") or ""
         centro_de_custo = po.get("centro_de_custo") or po.get("solicitante") or ""
-        forn_extraido   = po.get("fornecedor_escolhido_comentario") or ""
         observacoes     = po.get("observacoes") or ""
-        # Fallback em cadeia: comentários → observações → melhor preço cotação
+
+        # ── Fornecedor: usa o nome resolvido pelo analyzer (fonte única de verdade)
+        forn_extraido = analise.get("fornecedor_resolvido") or ""
+        # Fallback apenas se analyzer não resolveu (ex: análise sem PO)
+        if not forn_extraido:
+            forn_extraido = po.get("fornecedor_escolhido_comentario") or ""
         if not forn_extraido:
             forn_extraido = _buscar_fornecedor_nas_obs(observacoes)
         if not forn_extraido:

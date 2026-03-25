@@ -269,11 +269,14 @@ def _formatar_pre_extracoes(campos: dict) -> str:
     return "\n".join(partes)
 
 
-def _chamar_gemini(caminho_pdf: str, prompt: str, tentativas: int = 3) -> dict:
+def _chamar_gemini(caminho_pdf: str, prompt: str, tentativas: int = 3,
+                   texto_pdf: str = None, campos_pre: dict = None) -> dict:
     """
     Envia PDF + texto extraído + dados pré-identificados ao Gemini.
     Usa response_mime_type='application/json' para forçar saída JSON completa.
     Retry automático em caso de erro 429 (quota).
+
+    texto_pdf e campos_pre podem ser passados para evitar re-leitura do PDF.
     """
     client = genai.Client(api_key=GOOGLE_API_KEY)
 
@@ -284,11 +287,12 @@ def _chamar_gemini(caminho_pdf: str, prompt: str, tentativas: int = 3) -> dict:
             config=types.UploadFileConfig(display_name="documento.pdf", mime_type="application/pdf"),
         )
 
-    # Extrai texto do PDF como fonte complementar
-    texto_pdf = _extrair_texto_pdf(caminho_pdf)
+    # Usa texto/campos cacheados ou extrai pela primeira vez
+    if texto_pdf is None:
+        texto_pdf = _extrair_texto_pdf(caminho_pdf)
+    if campos_pre is None:
+        campos_pre = _pre_extrair_campos(texto_pdf)
 
-    # Pré-extrai campos estruturados via regex
-    campos_pre = _pre_extrair_campos(texto_pdf)
     pre_extracoes = _formatar_pre_extracoes(campos_pre)
 
     # Monta prompt enriquecido: prompt base + dados pré-identificados + texto PDF
@@ -481,7 +485,12 @@ def extrair_cotacoes(caminho_pdf: str) -> dict:
     Valida o resultado e re-extrai uma vez com instruções corretivas se houver problemas.
     Aplica fallbacks com pdfplumber para campos críticos ainda ausentes.
     """
-    dados = _chamar_gemini(caminho_pdf, PROMPT_COTACAO)
+    # Extrai texto UMA vez — reutilizado em todas as chamadas ao Gemini e nos fallbacks
+    texto_pdf = _extrair_texto_pdf(caminho_pdf)
+    campos_pre = _pre_extrair_campos(texto_pdf)
+
+    dados = _chamar_gemini(caminho_pdf, PROMPT_COTACAO,
+                           texto_pdf=texto_pdf, campos_pre=campos_pre)
     problemas = _validar_cotacao(dados)
 
     if problemas:
@@ -493,13 +502,12 @@ def extrair_cotacoes(caminho_pdf: str) -> dict:
             "Por favor, corrija estes problemas na nova extração.\n"
             "--- FIM DAS CORREÇÕES ---"
         )
-        dados_corrigidos = _chamar_gemini(caminho_pdf, correcao)
+        dados_corrigidos = _chamar_gemini(caminho_pdf, correcao,
+                                          texto_pdf=texto_pdf, campos_pre=campos_pre)
         if dados_corrigidos.get("fornecedores"):
             dados = dados_corrigidos
 
-    # ── Fallbacks com pdfplumber para campos críticos ──────────────────
-    texto_pdf = _extrair_texto_pdf(caminho_pdf)
-    campos_pre = _pre_extrair_campos(texto_pdf)
+    # ── Fallbacks com pdfplumber para campos críticos (já cacheados) ──
     codigos_pre = campos_pre.get("quotation_codes", [])
 
     for forn in dados.get("fornecedores", []):
@@ -562,7 +570,12 @@ def extrair_po(caminho_pdf: str) -> dict:
     Valida o resultado e re-extrai uma vez com instruções corretivas se houver problemas.
     Garante que numero_cotacao_ref seja extraído via pdfplumber como fallback.
     """
-    dados = _chamar_gemini(caminho_pdf, PROMPT_PO)
+    # Extrai texto UMA vez — reutilizado em todas as chamadas ao Gemini e nos fallbacks
+    texto_pdf = _extrair_texto_pdf(caminho_pdf)
+    campos_pre = _pre_extrair_campos(texto_pdf)
+
+    dados = _chamar_gemini(caminho_pdf, PROMPT_PO,
+                           texto_pdf=texto_pdf, campos_pre=campos_pre)
     problemas = _validar_po(dados)
 
     if problemas:
@@ -574,20 +587,20 @@ def extrair_po(caminho_pdf: str) -> dict:
             "Por favor, corrija estes problemas na nova extração.\n"
             "--- FIM DAS CORREÇÕES ---"
         )
-        dados_corrigidos = _chamar_gemini(caminho_pdf, correcao)
+        dados_corrigidos = _chamar_gemini(caminho_pdf, correcao,
+                                          texto_pdf=texto_pdf, campos_pre=campos_pre)
         if dados_corrigidos.get("po"):
             dados = dados_corrigidos
 
     po = dados.get("po", {})
 
-    # ── Fallbacks com pdfplumber para campos críticos ──────────────────
-    texto_pdf = _extrair_texto_pdf(caminho_pdf)
-    campos_pre = _pre_extrair_campos(texto_pdf)
+    # ── Fallbacks com pdfplumber para campos críticos (já cacheados) ──
 
-    # Quotation code
+    # Quotation code — usa pré-extração em vez de re-ler o PDF
     ref = po.get("numero_cotacao_ref")
+    codigos_pre = campos_pre.get("quotation_codes", [])
     if not ref or not re.match(r'202[4-9]\.\d{6,}', str(ref)):
-        code = _extrair_quotation_code_pdfplumber(caminho_pdf)
+        code = codigos_pre[0] if codigos_pre else None
         if code:
             po["numero_cotacao_ref"] = code
 

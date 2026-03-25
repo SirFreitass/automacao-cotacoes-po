@@ -17,7 +17,7 @@ from playwright.async_api import async_playwright, TimeoutError as PWTimeout
 import logging
 
 from config import SHIP_VIA_MAP, GL_CODE_PLANILHA
-from utils import quotation_code as _quotation_code_util, norm_vendor as _norm_vendor
+from utils import quotation_code as _quotation_code_util, norm_vendor as _norm_vendor, UOM_MAP
 
 logger = logging.getLogger(__name__)
 
@@ -26,38 +26,7 @@ TIMEOUT         = 30_000
 SHORT_WAIT      = 5_000
 VENDOR_MAP_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "vendor_map.json")
 
-# Mapeamento de UOM extraída → opção no ECO Requisition (kendo-dropdownlist)
-# Chaves em lowercase; valores EXATOS como aparecem no dropdown do ECO
-UOM_MAP = {
-    "each": "each", "ea": "each", "pc": "each", "pcs": "each", "piece": "each",
-    "unit": "each", "un": "each", "und": "each",
-    "box": "box", "bx": "box",
-    "case": "case", "cs": "case",
-    "cm": "cm",
-    "cu yd": "cu yd", "cubic yard": "cu yd",
-    "day": "day", "days": "day",
-    "dm": "dm",
-    "dozen": "dozen", "dz": "dozen", "doz": "dozen",
-    "drum": "drum",
-    "feet": "feet", "ft": "feet", "foot": "feet",
-    "gal": "gal", "gallon": "gal", "gallons": "gal",
-    "hour": "hour", "hr": "hour", "hrs": "hour",
-    "lb": "lb", "lbs": "lb", "pound": "lb", "pounds": "lb",
-    "liter": "liter", "ltr": "liter", "l": "liter", "litre": "liter",
-    "meter": "meter", "m": "meter", "mtr": "meter", "metre": "meter",
-    "miles": "miles", "mi": "miles", "mile": "miles",
-    "month": "month", "mo": "month", "months": "month",
-    "oz": "oz", "ounce": "oz", "ounces": "oz",
-    "pack": "pack", "pk": "pack",
-    "pail": "pail",
-    "pair": "pair", "pr": "pair", "pairs": "pair",
-    "quart": "quart", "qt": "quart",
-    "set": "set", "kit": "set", "lot": "set",
-    "sq ft": "sq ft", "sqft": "sq ft", "square foot": "sq ft", "square feet": "sq ft",
-    "ton": "ton", "tons": "ton",
-    "week": "week", "wk": "week", "weeks": "week",
-}
-
+# UOM_MAP importado de utils.py — mapa canônico único
 
 # ─────────────────────────────────────────────────────────────────────
 # Memória de fornecedores — persiste entre execuções
@@ -190,9 +159,12 @@ async def _criar_po_par(page, par: dict, vessels: dict, confirmar, escolher, ven
     numero_cot    = _numero_cotacao(analise)
     numero_po     = po_data.get("numero_po") or "?"
     centro_custo  = (po_data.get("centro_de_custo") or po_data.get("solicitante") or "").strip()
-    forn_extraido = (po_data.get("fornecedor_escolhido_comentario") or "").strip()
-    # Fallback: usa o Supplier da col F (melhor_preco.nome) quando forn_extraido estiver vazio
-    fornecedor_eco = forn_extraido or (melhor.get("nome") or "")
+    # ── Fornecedor: usa o nome resolvido pelo analyzer (fonte única de verdade)
+    fornecedor_eco = (analise.get("fornecedor_resolvido") or "").strip()
+    if not fornecedor_eco:
+        fornecedor_eco = (po_data.get("fornecedor_escolhido_comentario") or "").strip()
+    if not fornecedor_eco:
+        fornecedor_eco = (melhor.get("nome") or "").strip()
     itens_po      = po_data.get("itens") or []
 
     if not numero_cot:

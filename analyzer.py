@@ -72,6 +72,7 @@ def analisar(dados_cotacao: dict, dados_po: dict) -> dict:
         "alertas_itens": [],
         "alertas_po": [],
         "resumo_fornecedores": [],
+        "fornecedor_resolvido": None,   # nome definitivo — resolvido UMA vez aqui
         "po": po,
     }
 
@@ -200,6 +201,12 @@ def analisar(dados_cotacao: dict, dados_po: dict) -> dict:
 
     # Usa o fornecedor escolhido como referência para validação
     referencia = forn_escolhido or resultado["melhor_preco"]
+
+    # ── Fornecedor resolvido — UMA única vez, propagado a todos os módulos ──
+    if referencia:
+        resultado["fornecedor_resolvido"] = referencia.get("nome")
+    elif forn_comentario:
+        resultado["fornecedor_resolvido"] = po.get("fornecedor_escolhido_comentario")
     if not referencia:
         return resultado
 

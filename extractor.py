@@ -153,16 +153,131 @@ def _extrair_texto_pdf(caminho_pdf: str) -> str:
         return ""
 
 
+# ── Pré-extração de campos estruturados via regex ──────────────────────
+
+def _pre_extrair_campos(texto_pdf: str) -> dict:
+    """Extrai campos estruturados do texto do PDF via regex ANTES de enviar ao Gemini."""
+    campos = {}
+    if not texto_pdf:
+        return campos
+
+    # Quotation codes (20XX.XXXXXX)
+    codigos_raw = re.findall(r'202[4-9]\s*[.\s]\s*\d{6,}', texto_pdf)
+    if codigos_raw:
+        codigos = []
+        for c in codigos_raw:
+            limpo = re.sub(r'\s+', '', c)
+            if '.' not in limpo:
+                limpo = limpo[:4] + '.' + limpo[4:]
+            codigos.append(limpo)
+        campos["quotation_codes"] = list(set(codigos))
+
+    # ECO REQ numbers (10+ digit sequences, often after REQ# or REQ:)
+    reqs = re.findall(r'(?:REQ\s*#?\s*:?\s*)(\d{10,})', texto_pdf, re.IGNORECASE)
+    if reqs:
+        campos["eco_req_numbers"] = list(set(reqs))
+
+    # Part numbers (XX.XXXXXX format — código interno)
+    pns = re.findall(r'\b(\d{2}\.\d{6})\b', texto_pdf)
+    if pns:
+        campos["part_numbers"] = list(set(pns))
+
+    # Dollar amounts
+    valores = re.findall(r'\$\s*([\d,]+\.\d{2})', texto_pdf)
+    if valores:
+        campos["dollar_amounts"] = valores[:10]
+
+    # Dates (various formats)
+    datas_us = re.findall(r'\b(\d{1,2}/\d{1,2}/\d{2,4})\b', texto_pdf)
+    datas_iso = re.findall(r'\b(\d{4}-\d{2}-\d{2})\b', texto_pdf)
+    todas_datas = datas_us + datas_iso
+    if todas_datas:
+        campos["dates_found"] = todas_datas[:10]
+
+    # Supplier hints (From:, Vendor:, Supplier:, Company:, Quoted by:)
+    vendor_patterns = re.findall(
+        r'(?:From|Vendor|Supplier|Company|Quoted\s+by|Prepared\s+by)\s*[:]\s*(.+)',
+        texto_pdf, re.IGNORECASE
+    )
+    if vendor_patterns:
+        campos["vendor_hints"] = [v.strip()[:80] for v in vendor_patterns[:5]]
+
+    # Buyer comment vendor mentions (common in POs)
+    buyer_vendors = re.findall(
+        r'(?:FORN\.?\s*|purchasing\s+from\s+|vendor\s*:?\s*|buying\s+from\s+)([A-Z][A-Za-z\s&.,]+)',
+        texto_pdf, re.IGNORECASE
+    )
+    if buyer_vendors:
+        campos["buyer_vendor_mentions"] = [v.strip().rstrip('.,') for v in buyer_vendors[:5]]
+
+    # Payment terms
+    pay_patterns = re.findall(
+        r'(Net\s+\d+|COD|Credit\s+Card|Due\s+on\s+Receipt|Prepaid|C\.?O\.?D\.?)',
+        texto_pdf, re.IGNORECASE
+    )
+    if pay_patterns:
+        campos["payment_terms"] = list(set(pay_patterns))
+
+    # Freight/shipping hints
+    freight_patterns = re.findall(
+        r'(FOB\s+\w+|Freight\s+(?:Prepaid|Collect|Included)|Free\s+Shipping|'
+        r'Prepaid\s+and\s+Add|UPS\s+Ground|FedEx|Best\s+Way|No\s+Charge)',
+        texto_pdf, re.IGNORECASE
+    )
+    if freight_patterns:
+        campos["freight_hints"] = list(set(freight_patterns))[:5]
+
+    # Cost center (format: (XXXX) NAME - USD)
+    cc = re.findall(r'\(\d{4}\)\s+([A-Z][\w\s-]+?)\s*[-–]', texto_pdf)
+    if cc:
+        campos["cost_centers"] = [c.strip() for c in cc[:3]]
+
+    return campos
+
+
+def _formatar_pre_extracoes(campos: dict) -> str:
+    """Formata os campos pré-extraídos como seção de referência para o prompt."""
+    if not campos:
+        return ""
+
+    partes = [
+        "--- DADOS PRÉ-IDENTIFICADOS NO DOCUMENTO (REFERÊNCIA OBRIGATÓRIA) ---",
+        "Os seguintes dados foram encontrados no texto do documento via análise automatizada.",
+        "USE estes dados como referência prioritária. Se o dado pré-identificado estiver correto, USE-O.",
+        "",
+    ]
+
+    mapa = {
+        "quotation_codes":      "CÓDIGOS DE COTAÇÃO encontrados",
+        "eco_req_numbers":      "NÚMEROS ECO REQ encontrados",
+        "part_numbers":         "PART NUMBERS (formato XX.XXXXXX) encontrados",
+        "vendor_hints":         "POSSÍVEIS FORNECEDORES (cabeçalho/assinatura)",
+        "buyer_vendor_mentions":"FORNECEDORES mencionados em comentários do comprador",
+        "payment_terms":        "TERMOS DE PAGAMENTO encontrados",
+        "freight_hints":        "REFERÊNCIAS DE FRETE/ENVIO",
+        "dates_found":          "DATAS encontradas no documento",
+        "dollar_amounts":       "VALORES EM DÓLAR encontrados",
+        "cost_centers":         "CENTROS DE CUSTO encontrados",
+    }
+
+    for chave, rotulo in mapa.items():
+        if chave in campos:
+            valores = campos[chave]
+            partes.append(f"• {rotulo}: {', '.join(str(v) for v in valores)}")
+
+    partes.append("--- FIM DOS DADOS PRÉ-IDENTIFICADOS ---")
+    return "\n".join(partes)
+
+
 def _chamar_gemini(caminho_pdf: str, prompt: str, tentativas: int = 3) -> dict:
     """
-    Envia PDF + texto extraído ao Gemini e retorna JSON extraído.
-    O texto pré-extraído via pdfplumber serve como fonte complementar,
-    garantindo que dados não perdidos na leitura visual do PDF sejam capturados.
-    Retry automático em caso de erro 429 (quota), com espera entre tentativas.
+    Envia PDF + texto extraído + dados pré-identificados ao Gemini.
+    Usa response_mime_type='application/json' para forçar saída JSON completa.
+    Retry automático em caso de erro 429 (quota).
     """
     client = genai.Client(api_key=GOOGLE_API_KEY)
 
-    # Abre como bytes para evitar erro de encoding com nomes de arquivo acentuados (Windows)
+    # Abre como bytes para evitar erro de encoding com nomes acentuados (Windows)
     with open(caminho_pdf, "rb") as f:
         arquivo = client.files.upload(
             file=f,
@@ -171,15 +286,21 @@ def _chamar_gemini(caminho_pdf: str, prompt: str, tentativas: int = 3) -> dict:
 
     # Extrai texto do PDF como fonte complementar
     texto_pdf = _extrair_texto_pdf(caminho_pdf)
+
+    # Pré-extrai campos estruturados via regex
+    campos_pre = _pre_extrair_campos(texto_pdf)
+    pre_extracoes = _formatar_pre_extracoes(campos_pre)
+
+    # Monta prompt enriquecido: prompt base + dados pré-identificados + texto PDF
+    prompt_completo = prompt
+    if pre_extracoes:
+        prompt_completo += f"\n\n{pre_extracoes}"
     if texto_pdf:
-        prompt_completo = (
-            f"{prompt}\n\n"
-            "--- TEXTO EXTRAÍDO DO PDF (use como referência complementar) ---\n"
+        prompt_completo += (
+            "\n\n--- TEXTO EXTRAÍDO DO PDF (use como referência complementar) ---\n"
             f"{texto_pdf}\n"
             "--- FIM DO TEXTO EXTRAÍDO ---"
         )
-    else:
-        prompt_completo = prompt
 
     resposta = None
     try:
@@ -188,16 +309,18 @@ def _chamar_gemini(caminho_pdf: str, prompt: str, tentativas: int = 3) -> dict:
                 resposta = client.models.generate_content(
                     model=GEMINI_MODEL,
                     contents=[arquivo, prompt_completo],
+                    config=types.GenerateContentConfig(
+                        response_mime_type="application/json",
+                    ),
                 )
-                break  # sucesso — sai do loop
+                break  # sucesso
             except Exception as e:
                 msg = str(e)
                 if "429" in msg or "RESOURCE_EXHAUSTED" in msg:
                     if tentativa < tentativas:
-                        # Aguarda 60 s antes de tentar novamente (limite por minuto)
                         time.sleep(60)
                         continue
-                raise  # outros erros ou última tentativa — propaga
+                raise
     finally:
         try:
             client.files.delete(name=arquivo.name)
@@ -233,7 +356,7 @@ def _validar_cotacao(dados: dict) -> list[str]:
     for i, f in enumerate(fornecedores, 1):
         nome = f.get("nome")
         if not nome or nome == "null":
-            problemas.append(f"Fornecedor {i}: nome está vazio.")
+            problemas.append(f"Fornecedor {i}: nome está vazio. Procure no cabeçalho, logotipo, assinatura ou rodapé.")
 
         # Quotation code
         qc = f.get("numero_cotacao")
@@ -259,11 +382,30 @@ def _validar_cotacao(dados: dict) -> list[str]:
             pu = item.get("preco_unitario")
             if pu is None or (isinstance(pu, (int, float)) and pu <= 0):
                 problemas.append(f"Fornecedor {i} ({nome}), item {j}: preco_unitario ausente ou zero.")
+            # PN vazio
+            pn = (item.get("pn") or "").strip()
+            if not pn:
+                problemas.append(
+                    f"Fornecedor {i} ({nome}), item {j}: pn (part number) está vazio. "
+                    "Procure na linha do item, coluna 'Part #', 'P/N', 'Item #' ou no catálogo."
+                )
 
         # Data
         dc = f.get("data_cotacao")
         if dc and not RE_DATA.match(str(dc)):
             problemas.append(f"Fornecedor {i} ({nome}): data_cotacao '{dc}' não está no formato YYYY-MM-DD.")
+        if not dc:
+            problemas.append(f"Fornecedor {i} ({nome}): data_cotacao está vazia. Procure 'Date', 'Issued', 'Quote Date'.")
+
+        # Prazo de entrega
+        pe = f.get("prazo_entrega")
+        if not pe or pe == "null":
+            problemas.append(f"Fornecedor {i} ({nome}): prazo_entrega está vazio. Procure 'Lead Time', 'Delivery', 'Ship Date', 'ETA', 'ARO'.")
+
+        # Forma de pagamento
+        fp = f.get("forma_pagamento")
+        if not fp or fp == "null":
+            problemas.append(f"Fornecedor {i} ({nome}): forma_pagamento está vazio. Procure 'Terms', 'Payment', 'Net 30'.")
 
     return problemas
 
@@ -280,6 +422,22 @@ def _validar_po(dados: dict) -> list[str]:
     if not po.get("numero_po"):
         problemas.append("numero_po está vazio.")
 
+    # Centro de custo
+    cc = po.get("centro_de_custo")
+    if not cc or cc == "null":
+        problemas.append(
+            "centro_de_custo está vazio. Procure na seção 'Cost Center Apportionment' "
+            "ou 'Ship To'. Formato: '(XXXX) NOME - USD'. Retorne apenas o NOME."
+        )
+
+    # Fornecedor dos comentários
+    fec = po.get("fornecedor_escolhido_comentario")
+    if not fec or fec == "null":
+        problemas.append(
+            "fornecedor_escolhido_comentario está vazio. Procure nos 'Buyer comments', "
+            "'Observações', 'Notes' por menções como 'Vendor:', 'FORN.', 'purchasing from'."
+        )
+
     # Itens
     itens = po.get("itens", [])
     if not itens:
@@ -295,6 +453,16 @@ def _validar_po(dados: dict) -> list[str]:
                 f"Item {j}: pn '{pn}' parece ser número de linha SAP, NÃO um part number real. "
                 "Procure o PN real na descrição do item (formato XX.XXXXXX como 10.711325)."
             )
+        # PN completamente vazio
+        if not pn:
+            problemas.append(
+                f"Item {j}: pn está vazio. Procure o código do produto na PO — "
+                "geralmente no formato XX.XXXXXX (ex: 10.711325, 90259010)."
+            )
+        # Descrição vazia
+        desc = (item.get("descricao") or "").strip()
+        if not desc:
+            problemas.append(f"Item {j}: descricao está vazia.")
 
     # Quotation ref
     ref = po.get("numero_cotacao_ref")
@@ -311,6 +479,7 @@ def extrair_cotacoes(caminho_pdf: str) -> dict:
     """
     Extrai dados de cotações do PDF.
     Valida o resultado e re-extrai uma vez com instruções corretivas se houver problemas.
+    Aplica fallbacks com pdfplumber para campos críticos ainda ausentes.
     """
     dados = _chamar_gemini(caminho_pdf, PROMPT_COTACAO)
     problemas = _validar_cotacao(dados)
@@ -325,9 +494,26 @@ def extrair_cotacoes(caminho_pdf: str) -> dict:
             "--- FIM DAS CORREÇÕES ---"
         )
         dados_corrigidos = _chamar_gemini(caminho_pdf, correcao)
-        # Usa corrigido apenas se ainda tem fornecedores
         if dados_corrigidos.get("fornecedores"):
             dados = dados_corrigidos
+
+    # ── Fallbacks com pdfplumber para campos críticos ──────────────────
+    texto_pdf = _extrair_texto_pdf(caminho_pdf)
+    campos_pre = _pre_extrair_campos(texto_pdf)
+    codigos_pre = campos_pre.get("quotation_codes", [])
+
+    for forn in dados.get("fornecedores", []):
+        # Quotation code
+        qc = forn.get("numero_cotacao")
+        if (not qc or not RE_QUOTATION.match(str(qc))) and codigos_pre:
+            forn["numero_cotacao"] = codigos_pre[0]
+
+        # ECO REQ
+        req = forn.get("numero_eco_req")
+        if not req or req == "null":
+            reqs_pre = campos_pre.get("eco_req_numbers", [])
+            if reqs_pre:
+                forn["numero_eco_req"] = reqs_pre[0]
 
     return dados
 
@@ -394,12 +580,45 @@ def extrair_po(caminho_pdf: str) -> dict:
 
     po = dados.get("po", {})
 
-    # Se o Gemini não extraiu o quotation code, busca direto no texto do PDF
+    # ── Fallbacks com pdfplumber para campos críticos ──────────────────
+    texto_pdf = _extrair_texto_pdf(caminho_pdf)
+    campos_pre = _pre_extrair_campos(texto_pdf)
+
+    # Quotation code
     ref = po.get("numero_cotacao_ref")
     if not ref or not re.match(r'202[4-9]\.\d{6,}', str(ref)):
         code = _extrair_quotation_code_pdfplumber(caminho_pdf)
         if code:
             po["numero_cotacao_ref"] = code
-            dados["po"] = po
 
+    # Part numbers via regex se itens estão sem PN
+    pns_encontrados = campos_pre.get("part_numbers", [])
+    itens = po.get("itens", [])
+    if pns_encontrados and itens:
+        for item in itens:
+            pn = (item.get("pn") or "").strip()
+            # Se PN está vazio ou é número de linha SAP
+            if not pn or re.match(r'^0{2,}\d{1,2}$', pn):
+                desc = (item.get("descricao") or "").upper()
+                # Tenta encontrar um PN do regex que apareça na descrição
+                for pn_regex in pns_encontrados:
+                    if pn_regex in desc or pn_regex.replace(".", "") in desc.replace(".", ""):
+                        item["pn"] = pn_regex
+                        break
+
+    # Fornecedor dos comentários via regex
+    fec = po.get("fornecedor_escolhido_comentario")
+    if not fec or fec == "null":
+        mencoes = campos_pre.get("buyer_vendor_mentions", [])
+        if mencoes:
+            po["fornecedor_escolhido_comentario"] = mencoes[0]
+
+    # Centro de custo via regex
+    cc = po.get("centro_de_custo")
+    if not cc or cc == "null":
+        centros = campos_pre.get("cost_centers", [])
+        if centros:
+            po["centro_de_custo"] = centros[0]
+
+    dados["po"] = po
     return dados

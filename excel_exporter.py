@@ -707,7 +707,7 @@ def _aba_para_robo(wb, analise, prefixo):
             obs_alertas,          # H  OBS
             eco_req,              # I  ECO REQ
             observacoes,          # J  Observação PO
-            forn_extraido,        # K  Forn. Extraido
+            fornecedor_eco_item,  # K  Forn. Extraido (mesmo valor de F para consistência)
             "",                   # L  Forn Extraído ECO (VLOOKUP do Req-o-matic)
             numero_po,            # M  PO
             coluna5,              # N  Coluna5

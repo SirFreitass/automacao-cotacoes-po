@@ -67,13 +67,17 @@ def _numero_cotacao(analise: dict) -> str:
 def _termo_busca_vendor(nome: str) -> str:
     """
     Retorna o termo de busca para o autocomplete de vendor no ECO.
-    Usa apenas as primeiras 2 palavras com 3+ caracteres para maximizar
-    as chances de encontrar autocomplete (ex: 'Master Control Systems Inc'
-    → 'Master Control').
+    Remove grupos entre parênteses (ex: '(VESSEL SM PORTS)', '(Rebate 3%)') antes
+    de extrair as 2 primeiras palavras significativas.
+    Ex: '(VESSEL SM PORTS) BAKER DISTRIBUTING COMPANY (Rebate 3%)' → 'BAKER DISTRIBUTING'
     """
     if not nome:
         return ""
-    palavras_sig = [w for w in nome.split() if len(w) >= 3]
+    import re
+    cleaned = re.sub(r'\([^)]*\)', '', nome).strip()
+    if not cleaned:
+        cleaned = nome
+    palavras_sig = [w for w in cleaned.split() if len(w) >= 3 and not w.startswith('(')]
     if not palavras_sig:
         return nome
     return " ".join(palavras_sig[:2])
@@ -193,6 +197,7 @@ async def _criar_po_par(page, par: dict, vessels: dict, confirmar, escolher, ven
         await search_box.click()
         await search_box.press("Control+a")
         await search_box.press_sequentially(numero_busca, delay=50)
+        await page.wait_for_timeout(1500)  # aguarda filtro Kendo processar
 
         try:
             await page.wait_for_selector(
@@ -200,10 +205,16 @@ async def _criar_po_par(page, par: dict, vessels: dict, confirmar, escolher, ven
                 timeout=TIMEOUT,
             )
         except PWTimeout:
-            return {
-                "po": numero_po, "status": "ERRO",
-                "mensagem": f"Nenhum resultado encontrado para '{numero_busca}' no histórico do ECO"
-            }
+            # Segunda tentativa: aguarda mais 3s e tenta novamente
+            await page.wait_for_timeout(3000)
+            resultado = await page.query_selector(
+                f"kendo-grid-list table tbody tr td:has-text('{numero_busca}')"
+            )
+            if not resultado:
+                return {
+                    "po": numero_po, "status": "ERRO",
+                    "mensagem": f"Nenhum resultado encontrado para '{numero_busca}' no histórico do ECO"
+                }
 
         # ── D. Ler resultados ────────────────────────────────────────────
         result_cells = page.locator("td[role='gridcell'][aria-colindex='3']")
@@ -241,6 +252,34 @@ async def _criar_po_par(page, par: dict, vessels: dict, confirmar, escolher, ven
                 await page.locator("td[role='gridcell'][aria-colindex='8'] button").first.click()
         else:
             await page.locator("td[role='gridcell'][aria-colindex='8'] button").first.click()
+
+        # ── E2. Approve → Checkout → Order (estado dinâmico da requisição) ──────
+        # Fluxo: Approve (se visível) → reload → Checkout (se visível) → Order
+        approve_btn  = page.locator("button.blu.card-1:has-text('Approve')")
+        checkout_btn = page.locator("button:text-is('Check out')")
+
+        # Passo 1: Approve (se disponível)
+        try:
+            await approve_btn.wait_for(state="attached", timeout=3000)
+            await approve_btn.scroll_into_view_if_needed()
+            await page.wait_for_timeout(500)
+            await approve_btn.click()
+            await page.wait_for_timeout(2000)
+            await page.reload()
+            # Após reload, aguarda Checkout aparecer (até 10s)
+            await checkout_btn.wait_for(state="attached", timeout=10000)
+        except Exception:
+            pass  # Sem Approve ou já aprovado — verifica Checkout diretamente
+
+        # Passo 2: Checkout (se disponível — seja após Approve ou já estava)
+        try:
+            await checkout_btn.wait_for(state="attached", timeout=5000)
+            await checkout_btn.scroll_into_view_if_needed()
+            await page.wait_for_timeout(500)
+            await checkout_btn.click()
+            await page.wait_for_timeout(2000)
+        except Exception:
+            pass  # Sem Checkout — Order já disponível, segue normalmente
 
         # ── F. Aguardar botões Order ─────────────────────────────────────
         order_btns = page.locator("button.order.grn.card-1")
@@ -404,17 +443,28 @@ async def _criar_po_par(page, par: dict, vessels: dict, confirmar, escolher, ven
                 "mat-select[role='combobox'][formcontrolname='itemCodeId']"
             )
             try:
-                await gl_sel.wait_for(state="visible", timeout=3000)
-                gl_txt = (await gl_sel.inner_text()).strip()
-                if not gl_txt:
+                # GL Code é Kendo combobox — usa o input interno para busca
+                gl_input = page.locator(
+                    "kendo-combobox[formcontrolname='itemCodeId'] input.k-input-inner, "
+                    "kendo-dropdownlist[formcontrolname='itemCodeId'] input.k-input-inner"
+                ).first
+                await gl_input.wait_for(state="visible", timeout=3000)
+                gl_current = (await gl_input.input_value()).strip()
+                if not gl_current:
                     gl_code = vessels.get(centro_custo.upper()) if centro_custo else None
                     if gl_code:
-                        await gl_sel.click()
-                        await page.wait_for_timeout(500)
-                        await page.keyboard.type(str(gl_code))
-                        await page.wait_for_timeout(500)
-                        await page.keyboard.press("Enter")
-                        await page.wait_for_timeout(500)
+                        await gl_input.click()
+                        await gl_input.fill("")
+                        await page.keyboard.type(str(gl_code), delay=50)
+                        await page.wait_for_timeout(600)
+                        # Seleciona primeira opção do popup Kendo
+                        gl_opt = page.locator("kendo-popup li.k-list-item, kendo-popup li").first
+                        try:
+                            await gl_opt.wait_for(state="visible", timeout=3000)
+                            await gl_opt.click()
+                        except PWTimeout:
+                            await page.keyboard.press("Enter")
+                        await page.wait_for_timeout(400)
             except PWTimeout:
                 pass
 
@@ -473,17 +523,14 @@ async def _criar_po_par(page, par: dict, vessels: dict, confirmar, escolher, ven
 
             if qty_input:
                 current_qty = await qty_input.input_value()
+                # Nunca altera a quantidade — apenas confere com a PO
+                qtd_preenchida = current_qty
                 qtd_esperada = None
                 if item_casado:
                     q = item_casado.get("quantidade")
                     qtd_esperada = str(int(q)) if q is not None else None
-
-                if qtd_esperada and current_qty != qtd_esperada:
-                    await qty_input.triple_click()
-                    await qty_input.fill(qtd_esperada)
-                    qtd_preenchida = qtd_esperada
-                else:
-                    qtd_preenchida = current_qty
+                if qtd_esperada and current_qty and current_qty != qtd_esperada:
+                    qtd_preenchida = f"{current_qty} ⚠ PO={qtd_esperada}"
             # Se nenhum seletor encontrou o campo, continua sem alterar (não bloqueia)
 
             # ── L2b. UOM (Unidade de Medida) ───────────────────────────

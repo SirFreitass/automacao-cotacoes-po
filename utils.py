@@ -4,7 +4,14 @@ utils.py
 Funções utilitárias compartilhadas entre os módulos do sistema.
 """
 
+import json
+import logging
+import os
 import re
+
+logger = logging.getLogger(__name__)
+
+VENDOR_MAP_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "vendor_map.json")
 
 
 def norm_pn(pn: str) -> str:
@@ -117,3 +124,44 @@ def normalizar_uom(uom_raw: str) -> str:
     """Normaliza UOM extraída para o nome padrão do ECO Requisition."""
     u = (uom_raw or "each").strip().lower()
     return UOM_MAP.get(u, u)
+
+
+# ── Aprendizado automático de vendor ───────────────────────────────────
+
+def _carregar_vendor_map() -> dict:
+    """Carrega vendor_map.json."""
+    try:
+        with open(VENDOR_MAP_FILE, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return {}
+
+
+def aprender_vendor(nome_extraido: str, nome_eco: str):
+    """
+    Salva mapeamento nome_extraido → nome_eco no vendor_map.json.
+    Chamado automaticamente quando o sistema resolve um vendor com sucesso.
+    Evita salvar nomes inválidos (vazios, brokers conhecidos).
+    """
+    if not nome_extraido or not nome_eco:
+        return
+    # Não salvar brokers/emissores
+    blacklist = {"nautical ventures", "eco", "eco purchasing", "navship", "chouest"}
+    if norm_vendor(nome_extraido) in blacklist or norm_vendor(nome_eco) in blacklist:
+        return
+    # Não salvar se são idênticos (normalizado)
+    if norm_vendor(nome_extraido) == norm_vendor(nome_eco):
+        return
+
+    mapa = _carregar_vendor_map()
+    chave = norm_vendor(nome_extraido)
+    if chave in {norm_vendor(k) for k in mapa}:
+        return  # Já existe
+
+    mapa[nome_extraido] = nome_eco
+    try:
+        with open(VENDOR_MAP_FILE, "w", encoding="utf-8") as f:
+            json.dump(mapa, f, ensure_ascii=False, indent=2)
+        logger.info("Vendor aprendido: '%s' → '%s'", nome_extraido, nome_eco)
+    except Exception:
+        pass

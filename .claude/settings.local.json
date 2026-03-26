@@ -2,7 +2,14 @@
   "permissions": {
     "allow": [
       "Bash(unzip -p \"Req-o-matic v3.6.94 - POs.xlsm\" xl/worksheets/sheet5.xml)",
-      "Bash(python -c \"from google import genai; import inspect; print\\(inspect.signature\\(genai.Client\\(\\).files.upload\\)\\)\")"
+      "Bash(python -c \"from google import genai; import inspect; print\\(inspect.signature\\(genai.Client\\(\\).files.upload\\)\\)\")",
+      "mcp__plugin_context-mode_context-mode__ctx_execute",
+      "mcp__plugin_context-mode_context-mode__ctx_search",
+      "mcp__plugin_context-mode_context-mode__ctx_batch_execute",
+      "mcp__plugin_context-mode_context-mode__ctx_execute_file",
+      "Bash(python -c:*)",
+      "Bash(python -u -c \":*)",
+      "Bash(python -u:*)"
     ]
   }
 }

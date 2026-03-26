@@ -14,128 +14,131 @@ from google.genai import types
 from config import GOOGLE_API_KEY, GEMINI_MODEL
 
 
-PROMPT_COTACAO = """
-Você é um assistente especializado em análise de documentos de compras industriais.
+# ═══════════════════════════════════════════════════════════════════════
+# COTAÇÃO — 2 passadas: P1 (itens) + P2 (termos/metadados)
+# ═══════════════════════════════════════════════════════════════════════
 
-Analise este PDF que contém cotações de fornecedores e extraia as informações em JSON.
-Se houver múltiplos fornecedores no documento, extraia cada um separadamente.
-
-Retorne SOMENTE o JSON abaixo, sem texto adicional, sem markdown:
+PROMPT_COTACAO_P1 = """
+Analise este PDF de cotação de fornecedor e extraia ITENS E PREÇOS em JSON.
+Foco: nome do fornecedor, lista de itens, preços e totais.
 
 {
   "fornecedores": [
     {
-      "nome": "Nome COMPLETO do fornecedor — OBRIGATÓRIO, nunca deixar vazio. Procure no cabeçalho, logotipo, assinatura, rodapé, 'From:', 'Vendor:', 'Supplier:', 'Company:'. Se o nome aparecer de formas diferentes no documento (ex: 'Puckett CAT' e 'Puckett Machinery Company'), use o nome mais completo/formal.",
-      "contato": "Email ou telefone se disponível",
+      "nome": "Nome COMPLETO do fornecedor (cabeçalho, logotipo, assinatura, 'From:', 'Vendor:'). OBRIGATÓRIO.",
+      "contato": "Email ou telefone",
       "itens": [
         {
-          "pn": "Part Number exato como aparece",
+          "pn": "Part Number exato",
           "descricao": "Descrição completa do item",
           "quantidade": 1,
-          "uom": "Unidade de medida do item tal como aparece no documento (ex: each, ft, lot, box, lb, gal, meter, set, pair, dozen). Se não informada, retornar 'each'.",
+          "uom": "Unidade de medida em inglês (each, ft, box, lb, gal, meter, set, pair, dozen). Default: 'each'.",
           "preco_unitario": 0.00,
           "preco_total_item": 0.00,
           "item_identico_ao_solicitado": true,
-          "observacao_item": "Se for item similar ou substituto, descreva aqui"
+          "observacao_item": "Se substituto/similar, descreva aqui"
         }
       ],
       "preco_total": 0.00,
-      "moeda": "USD",
-      "prazo_entrega": "Ex: 3-5 business days, In stock, 2 weeks",
-      "prazo_entrega_dias": 0,
-      "tipo_freight": "OBRIGATÓRIO — classifique em uma destas 4 opções: 'Supplier Ship' (quando há custo de frete, prepaid and add, FOB, freight collect, best way, ground, ou qualquer cobrança de envio), 'Free Delivery' (sem custo de frete, free shipping, no charge, included in price), 'Runner Pick up' (ECO Runner, coleta, pick up pela ECO), 'UPS Account' (UPS, conta UPS da ECO). Se houver custo de frete > 0, SEMPRE use 'Supplier Ship'. Na dúvida, use 'Supplier Ship'.",
-      "custo_freight": 0.00,
-      "forma_pagamento": "Ex: Net 30, Credit Card, COD",
-      "data_cotacao": "Data de emissão da cotação no formato YYYY-MM-DD. Se não houver, null.",
-      "validade_cotacao": "Data de validade no formato YYYY-MM-DD. Se mencionar dias (ex: 'valid for 30 days', 'válido por 30 dias'), calcule somando à data de emissão. Tente sempre retornar uma data concreta no formato YYYY-MM-DD.",
-      "validade_dias": 30,
-      "numero_cotacao": "Número da cotação — procure em todo o documento por padrões como 2025.XXXXXX ou 2026.XXXXXX onde X é dígito (ex: 2025.039982, 2026.008941). Verifique cabeçalho, rodapé, assunto do e-mail, referências e campos como 'Quote #', 'Quotation No', 'Ref:'. Se não encontrar este padrão, use o número de cotação que aparecer.",
-      "numero_eco_req": "Número da REQ ECO no formato numérico (ex: 031326015461). Procure por 'REQ#', 'REQ:', 'Requisition' ou sequências longas de números que identifiquem a solicitação.",
-      "observacoes": "Qualquer informação relevante adicional"
+      "moeda": "USD"
     }
   ]
 }
 
-Regras importantes:
-- prazo_entrega_dias: converta para número inteiro estimado de dias úteis (ex: "2 weeks" = 10, "In stock" = 1, "3-5 days" = 5)
-- preco_total: some itens + freight se aplicável
-- item_identico_ao_solicitado: false se for substituto, similar ou número de parte diferente
-- Se algum campo não estiver disponível, use null
-- nome do fornecedor: NUNCA retorne vazio. Use o nome formal/completo que aparece no documento.
-- uom: normalize para inglês (ex: "unidade"/"un" → "each", "pé"/"pés" → "feet", "caixa" → "box"). Use sempre o termo em inglês.
-- Se o mesmo fornecedor aparece com nomes ligeiramente diferentes (ex: "Louisiana CAT" vs "Louisiana Cat"), use a versão EXATA como aparece no CABEÇALHO ou logotipo da cotação.
+Regras:
+- preco_total: soma dos itens (sem freight nesta passada)
+- item_identico_ao_solicitado: false se substituto/similar
+- nome: NUNCA vazio. Use o nome formal do CABEÇALHO ou logotipo.
+- Se múltiplos fornecedores, extraia cada um separadamente.
 
---- EXEMPLO DE SAÍDA CORRETA ---
-Dado um PDF com cotação da "Power Specialties" para uma válvula, a saída esperada seria:
-
-{"fornecedores": [{"nome": "Power Specialties", "contato": "sales@powerspec.com", "itens": [{"pn": "V-2541-B", "descricao": "2in Ball Valve 316SS 150# Flanged", "quantidade": 2, "uom": "each", "preco_unitario": 485.00, "preco_total_item": 970.00, "item_identico_ao_solicitado": true, "observacao_item": null}], "preco_total": 1015.00, "moeda": "USD", "prazo_entrega": "2-3 weeks ARO", "prazo_entrega_dias": 15, "tipo_freight": "Supplier Ship", "custo_freight": 45.00, "forma_pagamento": "Net 30", "data_cotacao": "2026-03-10", "validade_cotacao": "2026-04-09", "validade_dias": 30, "numero_cotacao": "2026.010582", "numero_eco_req": "031326015461", "observacoes": "FOB Origin, Freight Prepaid and Add"}]}
-
-Notas sobre o exemplo:
-- numero_cotacao segue o padrão 20XX.XXXXXX (encontrado no cabeçalho do e-mail)
-- tipo_freight é "Supplier Ship" porque há custo de frete ($45.00)
-- validade_cotacao foi calculada: data_cotacao + 30 dias
-- preco_total = 970.00 (itens) + 45.00 (freight) = 1015.00
---- FIM DO EXEMPLO ---
+Exemplo: {"fornecedores": [{"nome": "Power Specialties", "contato": "sales@powerspec.com", "itens": [{"pn": "V-2541-B", "descricao": "2in Ball Valve 316SS", "quantidade": 2, "uom": "each", "preco_unitario": 485.00, "preco_total_item": 970.00, "item_identico_ao_solicitado": true, "observacao_item": null}], "preco_total": 970.00, "moeda": "USD"}]}
 """
 
-PROMPT_PO = """
-Você é um assistente especializado em análise de documentos de compras industriais.
+PROMPT_COTACAO_P2 = """
+Analise este PDF de cotação e extraia TERMOS COMERCIAIS E REFERÊNCIAS em JSON.
+Foco: frete, pagamento, datas, prazos, número da cotação.
 
-Analise este PDF de Purchase Order (PO) e extraia as informações em JSON.
+{
+  "termos": [
+    {
+      "nome_fornecedor": "Nome do fornecedor (para associar aos itens extraídos anteriormente)",
+      "tipo_freight": "OBRIGATÓRIO — uma destas 4 opções: 'Supplier Ship' (custo de frete, prepaid and add, FOB, freight collect, best way, ground), 'Free Delivery' (sem custo, free shipping, no charge, included), 'Runner Pick up' (ECO Runner, coleta, pick up), 'UPS Account' (UPS, conta UPS). Custo > 0 → SEMPRE 'Supplier Ship'. Na dúvida → 'Supplier Ship'.",
+      "custo_freight": 0.00,
+      "forma_pagamento": "Ex: Net 30, Credit Card, COD. Procure 'Terms', 'Payment Terms'.",
+      "prazo_entrega": "Texto original. Ex: '3-5 business days', 'In stock', '2 weeks ARO'",
+      "prazo_entrega_dias": 0,
+      "data_cotacao": "YYYY-MM-DD. Procure 'Date', 'Quote Date', 'Issued'.",
+      "validade_cotacao": "YYYY-MM-DD. Se diz '30 days', calcule: data_cotacao + 30 dias.",
+      "validade_dias": 30,
+      "numero_cotacao": "Procure padrão 20XX.XXXXXX (ex: 2026.010582) em cabeçalho, rodapé, 'Quote #', 'Ref:', assunto de e-mail. Se não encontrar este padrão, use qualquer número de cotação.",
+      "numero_eco_req": "Formato numérico longo (ex: 031326015461). Procure 'REQ#', 'REQ:', 'Requisition'.",
+      "observacoes": "Informações adicionais relevantes (condições, FOB, etc.)"
+    }
+  ]
+}
 
-Retorne SOMENTE o JSON abaixo, sem texto adicional, sem markdown:
+Regras:
+- prazo_entrega_dias: converta para dias úteis ("2 weeks" = 10, "In stock" = 1, "3-5 days" = 5)
+- Se campo não disponível, use null. NUNCA deixe tipo_freight vazio.
+
+Exemplo: {"termos": [{"nome_fornecedor": "Power Specialties", "tipo_freight": "Supplier Ship", "custo_freight": 45.00, "forma_pagamento": "Net 30", "prazo_entrega": "2-3 weeks ARO", "prazo_entrega_dias": 15, "data_cotacao": "2026-03-10", "validade_cotacao": "2026-04-09", "validade_dias": 30, "numero_cotacao": "2026.010582", "numero_eco_req": "031326015461", "observacoes": "FOB Origin, Freight Prepaid and Add"}]}
+"""
+
+# ═══════════════════════════════════════════════════════════════════════
+# PO — 2 passadas: P1 (itens) + P2 (metadados/comentários)
+# ═══════════════════════════════════════════════════════════════════════
+
+PROMPT_PO_P1 = """
+Analise este PDF de Purchase Order (PO) e extraia ITENS E VALORES em JSON.
+Foco: número da PO, itens, preços, totais.
 
 {
   "po": {
     "numero_po": "Número da PO",
     "data": "Data da PO",
-    "fornecedor_selecionado": "Nome do fornecedor para quem a PO foi emitida",
-    "solicitante": "Nome do solicitante/requisitante se disponível",
-    "fornecedor_escolhido_comentario": "Nome do fornecedor/fabricante REAL mencionado explicitamente nos comentários do comprador. REGRAS CRÍTICAS: (1) NUNCA retornar 'Nautical Ventures', 'ECO', 'ECO Purchasing' — estes são a própria empresa emissora da PO, jamais o fornecedor. (2) O padrão mais comum nos comentários é: 'ECO REQ#:XXXXXXXX - NOME_EMBARCAÇÃO - NOME_FORNECEDOR' — extraia apenas o NOME_FORNECEDOR (última parte após o segundo hífen). Exemplos: 'ECO Req#:022526011514 - baker' → 'baker'; 'ECO REQ#:030226012600 - KUDU - baker' → 'baker'; 'ECO REQ#:030326012826 - BRAM SPIRIT - brt marine' → 'brt marine'. (3) Outros formatos: 'purchasing from Power Specialties' → 'Power Specialties'; 'vendor: TNG Telecom' → 'TNG Telecom'. (4) Se não houver menção EXPLÍCITA de fornecedor real, retornar null.",
-    "numero_eco_req": "Número da REQ ECO no formato numérico (ex: 031326015461). Procure por 'REQ#', 'REQ:', 'Requisition' ou sequências longas de números que identifiquem a solicitação nos comentários ou cabeçalho da PO.",
-    "numero_cotacao_ref": "Número de cotação referenciado na PO — procure por padrões como 2025.XXXXXX ou 2026.XXXXXX (ex: 2025.039982) em qualquer campo da PO (comentários, descrição, referências). Se não encontrar este padrão, retornar null.",
-    "centro_de_custo": "Nome do centro de custo/embarcação extraído da seção 'Cost Center Apportionment'. O formato é '(CÓDIGO) NOME - USD VALOR'. Retornar apenas o NOME. Ex: '(0185) C-ADMIRAL - USD 3.500,00' → 'C-ADMIRAL'. Se houver múltiplos centros de custo, retornar o nome do primeiro. Se não houver, retornar null.",
+    "fornecedor_selecionado": "Nome do fornecedor no cabeçalho da PO",
     "itens": [
       {
-        "pn": "Código interno REAL do produto na PO — geralmente no formato XX.XXXXXX (ex: 10.711325, 90259010). ATENÇÃO: números sequenciais como '000010', '000020', '000030' são NÚMEROS DE LINHA do SAP, NÃO são part numbers reais. Nesse caso, procure o PN real na descrição do item (formato XX.XXXXXX) e use esse.",
-        "pn_fornecedor": "PN do fornecedor extraído da descrição do item — geralmente aparece entre parênteses no final da descrição. Ex: 'Antenna GPS (GPS-ANT-001)' → 'GPS-ANT-001'. Se não houver parênteses com PN, retornar null.",
+        "pn": "Código interno do produto (formato XX.XXXXXX como 10.711325). ATENÇÃO: '000010', '000020' são números de LINHA SAP, não PNs. Procure o PN real na descrição.",
+        "pn_fornecedor": "PN entre parênteses na descrição. Ex: '... (GPS-ANT-001)' → 'GPS-ANT-001'. Se não houver, null.",
         "descricao": "Descrição completa do item",
         "quantidade": 1,
-        "uom": "Unidade de medida do item (ex: each, ft, lot, box, lb, gal, meter, set, pair, dozen). Se não informada, retornar 'each'.",
+        "uom": "Unidade de medida em inglês (each, ft, box, lb). Default: 'each'.",
         "preco_unitario": 0.00,
-        "preco_total_item": 0.00,
-        "fornecedor_item": "Nome do fornecedor/fabricante específico para ESTE item, se mencionado nos comentários ou notações individuais do item. Ignorar o fornecedor geral da PO — apenas capturar se houver menção explícita por item. Ex: nota do item diz 'purchasing from Bruce Kay' → 'Bruce Kay'. Se não houver, retornar null."
+        "preco_total_item": 0.00
       }
     ],
     "subtotal": 0.00,
     "custo_freight": 0.00,
     "preco_total": 0.00,
-    "moeda": "USD",
-    "forma_pagamento": "Forma de pagamento",
-    "prazo_entrega": "Prazo de entrega solicitado",
-    "observacoes": "Observações gerais da PO incluindo comentários do comprador"
+    "moeda": "USD"
   }
 }
 
-Regras:
-- O fornecedor no cabeçalho da PO pode ser um agente/broker (ex: Nautical Ventures). O fornecedor real escolhido geralmente está nos comentários do comprador.
-- O campo pn pode ser um código interno da empresa — o PN real do fornecedor está entre parênteses no fim da descrição.
-- Se o freight não estiver discriminado na PO, use 0.00 e registre em observacoes.
-- Se algum campo não estiver disponível, use null.
+Exemplo: {"po": {"numero_po": "PO-2026-04521", "data": "2026-03-15", "fornecedor_selecionado": "Nautical Ventures", "itens": [{"pn": "90259010", "pn_fornecedor": "V-2541-B", "descricao": "10.710081 2in Ball Valve 316SS (V-2541-B)", "quantidade": 2, "uom": "each", "preco_unitario": 485.00, "preco_total_item": 970.00}], "subtotal": 970.00, "custo_freight": 45.00, "preco_total": 1015.00, "moeda": "USD"}}
+"""
 
---- EXEMPLO DE SAÍDA CORRETA ---
-Dado um PDF de PO emitido para "Nautical Ventures" (broker) onde o comprador escreveu nos comentários "purchasing from Power Specialties - Quote 2026.010582 - REQ# 031326015461":
+PROMPT_PO_P2 = """
+Analise este PDF de Purchase Order (PO) e extraia METADADOS E COMENTÁRIOS em JSON.
+Foco: fornecedor real, referências, centro de custo, termos.
 
-{"po": {"numero_po": "PO-2026-04521", "data": "2026-03-15", "fornecedor_selecionado": "Nautical Ventures", "solicitante": "John Smith", "fornecedor_escolhido_comentario": "Power Specialties", "numero_eco_req": "031326015461", "numero_cotacao_ref": "2026.010582", "centro_de_custo": "C-ADMIRAL", "itens": [{"pn": "90259010", "pn_fornecedor": "V-2541-B", "descricao": "10.710081 2in Ball Valve 316SS (V-2541-B)", "quantidade": 2, "uom": "each", "preco_unitario": 485.00, "preco_total_item": 970.00, "fornecedor_item": null}], "subtotal": 970.00, "custo_freight": 45.00, "preco_total": 1015.00, "moeda": "USD", "forma_pagamento": "Net 30", "prazo_entrega": "2-3 weeks", "observacoes": "purchasing from Power Specialties - Quote 2026.010582 - REQ# 031326015461"}}
+{
+  "po_meta": {
+    "fornecedor_escolhido_comentario": "Fornecedor REAL nos comentários do comprador. REGRAS: (1) NUNCA 'Nautical Ventures', 'ECO', 'ECO Purchasing' — são a empresa emissora. (2) Padrão comum: 'ECO REQ#:XXXXXXXX - EMBARCAÇÃO - FORNECEDOR' — extraia APENAS o FORNECEDOR (última parte). Ex: 'ECO REQ#:030326012826 - BRAM SPIRIT - brt marine' → 'brt marine'. (3) Outros: 'purchasing from Power Specialties' → 'Power Specialties'. (4) Se não há menção explícita → null.",
+    "numero_eco_req": "Número ECO REQ (ex: 031326015461). Procure 'REQ#', 'REQ:', 'Requisition'.",
+    "numero_cotacao_ref": "Padrão 20XX.XXXXXX (ex: 2026.010582) em comentários, descrição, referências. Se não encontrar → null.",
+    "centro_de_custo": "Nome do centro de custo em 'Cost Center Apportionment'. Formato '(XXXX) NOME - USD'. Retorne SÓ o NOME. Ex: '(0185) C-ADMIRAL - USD 3500' → 'C-ADMIRAL'.",
+    "solicitante": "Nome do solicitante/requisitante",
+    "forma_pagamento": "Termos de pagamento (Net 30, COD, etc.)",
+    "prazo_entrega": "Prazo de entrega solicitado",
+    "observacoes": "Todos os comentários do comprador, buyer notes, observações.",
+    "fornecedor_item": [
+      {"pn": "PN do item", "fornecedor": "Fornecedor específico para este item, se mencionado. Se não → null."}
+    ]
+  }
+}
 
-Notas sobre o exemplo:
-- fornecedor_selecionado = "Nautical Ventures" (cabeçalho da PO — é o broker)
-- fornecedor_escolhido_comentario = "Power Specialties" (extraído dos comentários — é o fornecedor REAL)
-- pn_fornecedor = "V-2541-B" (extraído dos parênteses na descrição)
-- numero_cotacao_ref = "2026.010582" (padrão 20XX.XXXXXX encontrado nos comentários)
-- centro_de_custo = "C-ADMIRAL" (apenas o nome, sem código nem valor)
-- fornecedor_item = null (não há menção de fornecedor específico por item)
---- FIM DO EXEMPLO ---
+Exemplo: {"po_meta": {"fornecedor_escolhido_comentario": "Power Specialties", "numero_eco_req": "031326015461", "numero_cotacao_ref": "2026.010582", "centro_de_custo": "C-ADMIRAL", "solicitante": "John Smith", "forma_pagamento": "Net 30", "prazo_entrega": "2-3 weeks", "observacoes": "purchasing from Power Specialties - Quote 2026.010582 - REQ# 031326015461", "fornecedor_item": []}}
 """
 
 
@@ -479,44 +482,94 @@ def _validar_po(dados: dict) -> list[str]:
     return problemas
 
 
+def _merge_cotacao(p1: dict, p2: dict) -> dict:
+    """Combina resultados da Passada 1 (itens) e Passada 2 (termos) da cotação."""
+    fornecedores = p1.get("fornecedores", [])
+    termos = p2.get("termos", [])
+
+    # Indexa termos por nome normalizado do fornecedor
+    termos_idx = {}
+    for t in termos:
+        nome = (t.get("nome_fornecedor") or "").lower().strip()
+        if nome:
+            termos_idx[nome] = t
+
+    for forn in fornecedores:
+        nome = (forn.get("nome") or "").lower().strip()
+        # Busca termos: match exato ou substring
+        termo = termos_idx.get(nome)
+        if not termo:
+            termo = next((t for k, t in termos_idx.items()
+                         if k in nome or nome in k), None)
+        # Se só há 1 fornecedor e 1 termo, associa direto
+        if not termo and len(fornecedores) == 1 and len(termos) == 1:
+            termo = termos[0]
+
+        if termo:
+            forn["tipo_freight"] = termo.get("tipo_freight")
+            forn["custo_freight"] = termo.get("custo_freight")
+            forn["forma_pagamento"] = termo.get("forma_pagamento")
+            forn["prazo_entrega"] = termo.get("prazo_entrega")
+            forn["prazo_entrega_dias"] = termo.get("prazo_entrega_dias")
+            forn["data_cotacao"] = termo.get("data_cotacao")
+            forn["validade_cotacao"] = termo.get("validade_cotacao")
+            forn["validade_dias"] = termo.get("validade_dias", 30)
+            forn["numero_cotacao"] = termo.get("numero_cotacao")
+            forn["numero_eco_req"] = termo.get("numero_eco_req")
+            forn["observacoes"] = termo.get("observacoes")
+            # Soma freight ao preco_total se aplicável
+            freight = termo.get("custo_freight") or 0
+            if freight and forn.get("preco_total"):
+                forn["preco_total"] = forn["preco_total"] + float(freight)
+
+    return {"fornecedores": fornecedores}
+
+
 def extrair_cotacoes(caminho_pdf: str) -> dict:
     """
-    Extrai dados de cotações do PDF.
-    Valida o resultado e re-extrai uma vez com instruções corretivas se houver problemas.
-    Aplica fallbacks com pdfplumber para campos críticos ainda ausentes.
+    Extrai dados de cotações do PDF em 2 passadas focadas:
+      P1: itens, preços, fornecedor (dados concretos)
+      P2: freight, pagamento, datas, referências (metadados)
+    Valida, re-extrai se necessário, e aplica fallbacks pdfplumber.
     """
-    # Extrai texto UMA vez — reutilizado em todas as chamadas ao Gemini e nos fallbacks
+    # Extrai texto UMA vez — reutilizado em todas as chamadas
     texto_pdf = _extrair_texto_pdf(caminho_pdf)
     campos_pre = _pre_extrair_campos(texto_pdf)
 
-    dados = _chamar_gemini(caminho_pdf, PROMPT_COTACAO,
-                           texto_pdf=texto_pdf, campos_pre=campos_pre)
-    problemas = _validar_cotacao(dados)
+    # ── Passada 1: itens e preços ──────────────────────────────────────
+    p1 = _chamar_gemini(caminho_pdf, PROMPT_COTACAO_P1,
+                        texto_pdf=texto_pdf, campos_pre=campos_pre)
 
+    # ── Passada 2: termos e referências ────────────────────────────────
+    p2 = _chamar_gemini(caminho_pdf, PROMPT_COTACAO_P2,
+                        texto_pdf=texto_pdf, campos_pre=campos_pre)
+
+    # ── Merge dos resultados ───────────────────────────────────────────
+    dados = _merge_cotacao(p1, p2)
+
+    # ── Validação + retry focado ───────────────────────────────────────
+    problemas = _validar_cotacao(dados)
     if problemas:
+        # Retry com prompt combinado (menor que o antigo) + lista de problemas
         correcao = (
-            f"{PROMPT_COTACAO}\n\n"
-            "--- ATENÇÃO: CORREÇÕES NECESSÁRIAS ---\n"
-            "Uma extração anterior retornou os seguintes problemas:\n"
+            f"{PROMPT_COTACAO_P1}\n\n{PROMPT_COTACAO_P2}\n\n"
+            "--- CORREÇÕES NECESSÁRIAS ---\n"
             + "\n".join(f"- {p}" for p in problemas) + "\n"
-            "Por favor, corrija estes problemas na nova extração.\n"
-            "--- FIM DAS CORREÇÕES ---"
+            "Corrija estes problemas. Retorne JSON com chave 'fornecedores'.\n"
         )
         dados_corrigidos = _chamar_gemini(caminho_pdf, correcao,
                                           texto_pdf=texto_pdf, campos_pre=campos_pre)
         if dados_corrigidos.get("fornecedores"):
             dados = dados_corrigidos
 
-    # ── Fallbacks com pdfplumber para campos críticos (já cacheados) ──
+    # ── Fallbacks pdfplumber (já cacheados) ────────────────────────────
     codigos_pre = campos_pre.get("quotation_codes", [])
 
     for forn in dados.get("fornecedores", []):
-        # Quotation code
         qc = forn.get("numero_cotacao")
         if (not qc or not RE_QUOTATION.match(str(qc))) and codigos_pre:
             forn["numero_cotacao"] = codigos_pre[0]
 
-        # ECO REQ
         req = forn.get("numero_eco_req")
         if not req or req == "null":
             reqs_pre = campos_pre.get("eco_req_numbers", [])
@@ -564,28 +617,63 @@ def _extrair_quotation_code_pdfplumber(caminho_pdf: str) -> str | None:
     return None
 
 
+def _merge_po(p1: dict, p2: dict) -> dict:
+    """Combina resultados da Passada 1 (itens) e Passada 2 (metadados) da PO."""
+    po = p1.get("po", {})
+    meta = p2.get("po_meta", {})
+
+    # Mescla metadados na PO
+    po["fornecedor_escolhido_comentario"] = meta.get("fornecedor_escolhido_comentario")
+    po["numero_eco_req"] = meta.get("numero_eco_req")
+    po["numero_cotacao_ref"] = meta.get("numero_cotacao_ref")
+    po["centro_de_custo"] = meta.get("centro_de_custo")
+    po["solicitante"] = meta.get("solicitante") or po.get("solicitante")
+    po["forma_pagamento"] = meta.get("forma_pagamento")
+    po["prazo_entrega"] = meta.get("prazo_entrega")
+    po["observacoes"] = meta.get("observacoes")
+
+    # Fornecedor por item (se P2 retornou)
+    forn_itens = {fi.get("pn"): fi.get("fornecedor")
+                  for fi in meta.get("fornecedor_item", []) if fi.get("pn")}
+    if forn_itens:
+        for item in po.get("itens", []):
+            pn = item.get("pn") or ""
+            if pn in forn_itens:
+                item["fornecedor_item"] = forn_itens[pn]
+
+    return {"po": po}
+
+
 def extrair_po(caminho_pdf: str) -> dict:
     """
-    Extrai dados da PO do PDF.
-    Valida o resultado e re-extrai uma vez com instruções corretivas se houver problemas.
-    Garante que numero_cotacao_ref seja extraído via pdfplumber como fallback.
+    Extrai dados da PO em 2 passadas focadas:
+      P1: número, itens, preços (dados concretos)
+      P2: fornecedor real, ECO REQ, cotação, centro de custo (metadados)
+    Valida, re-extrai se necessário, e aplica fallbacks pdfplumber.
     """
-    # Extrai texto UMA vez — reutilizado em todas as chamadas ao Gemini e nos fallbacks
+    # Extrai texto UMA vez
     texto_pdf = _extrair_texto_pdf(caminho_pdf)
     campos_pre = _pre_extrair_campos(texto_pdf)
 
-    dados = _chamar_gemini(caminho_pdf, PROMPT_PO,
-                           texto_pdf=texto_pdf, campos_pre=campos_pre)
-    problemas = _validar_po(dados)
+    # ── Passada 1: itens e valores ─────────────────────────────────────
+    p1 = _chamar_gemini(caminho_pdf, PROMPT_PO_P1,
+                        texto_pdf=texto_pdf, campos_pre=campos_pre)
 
+    # ── Passada 2: metadados e comentários ─────────────────────────────
+    p2 = _chamar_gemini(caminho_pdf, PROMPT_PO_P2,
+                        texto_pdf=texto_pdf, campos_pre=campos_pre)
+
+    # ── Merge dos resultados ───────────────────────────────────────────
+    dados = _merge_po(p1, p2)
+
+    # ── Validação + retry focado ───────────────────────────────────────
+    problemas = _validar_po(dados)
     if problemas:
         correcao = (
-            f"{PROMPT_PO}\n\n"
-            "--- ATENÇÃO: CORREÇÕES NECESSÁRIAS ---\n"
-            "Uma extração anterior retornou os seguintes problemas:\n"
+            f"{PROMPT_PO_P1}\n\n{PROMPT_PO_P2}\n\n"
+            "--- CORREÇÕES NECESSÁRIAS ---\n"
             + "\n".join(f"- {p}" for p in problemas) + "\n"
-            "Por favor, corrija estes problemas na nova extração.\n"
-            "--- FIM DAS CORREÇÕES ---"
+            "Corrija estes problemas. Retorne JSON com chave 'po' contendo TODOS os campos.\n"
         )
         dados_corrigidos = _chamar_gemini(caminho_pdf, correcao,
                                           texto_pdf=texto_pdf, campos_pre=campos_pre)
@@ -594,28 +682,25 @@ def extrair_po(caminho_pdf: str) -> dict:
 
     po = dados.get("po", {})
 
-    # ── Fallbacks com pdfplumber para campos críticos (já cacheados) ──
+    # ── Fallbacks pdfplumber (já cacheados) ────────────────────────────
 
-    # Quotation code — usa pré-extração em vez de re-ler o PDF
+    # Quotation code
     ref = po.get("numero_cotacao_ref")
     codigos_pre = campos_pre.get("quotation_codes", [])
     if not ref or not re.match(r'202[4-9]\.\d{6,}', str(ref)):
-        code = codigos_pre[0] if codigos_pre else None
-        if code:
-            po["numero_cotacao_ref"] = code
+        if codigos_pre:
+            po["numero_cotacao_ref"] = codigos_pre[0]
 
-    # Part numbers via regex se itens estão sem PN
+    # Part numbers via regex
     pns_encontrados = campos_pre.get("part_numbers", [])
     itens = po.get("itens", [])
     if pns_encontrados and itens:
         for item in itens:
             pn = (item.get("pn") or "").strip()
-            # Se PN está vazio ou é número de linha SAP
             if not pn or re.match(r'^0{2,}\d{1,2}$', pn):
                 desc = (item.get("descricao") or "").upper()
-                # Tenta encontrar um PN do regex que apareça na descrição
                 for pn_regex in pns_encontrados:
-                    if pn_regex in desc or pn_regex.replace(".", "") in desc.replace(".", ""):  # type: ignore
+                    if pn_regex in desc or pn_regex.replace(".", "") in desc.replace(".", ""):
                         item["pn"] = pn_regex
                         break
 

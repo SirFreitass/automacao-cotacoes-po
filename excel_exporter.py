@@ -17,7 +17,7 @@ from openpyxl import Workbook, load_workbook
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 from openpyxl.utils import get_column_letter
 from config import ROBO_PLANILHA, SHIP_VIA_MAP
-from utils import norm_pn as _norm_pn, norm_vendor as _norm_vendor, numero_cotacao as _numero_cotacao, quotation_code as _quotation_code, normalizar_freight_robo as _normalizar_freight_robo, normalizar_uom as _normalizar_uom
+from utils import norm_pn as _norm_pn, norm_vendor as _norm_vendor, numero_cotacao as _numero_cotacao, quotation_code as _quotation_code, normalizar_freight_robo as _normalizar_freight_robo, normalizar_uom as _normalizar_uom, aprender_vendor as _aprender_vendor
 
 logger = logging.getLogger(__name__)
 
@@ -174,11 +174,13 @@ def _lookup_fornecedor_eco(nome_extraido: str) -> str:
     # 1. Tabela Forn — exata normalizada
     for k, v in _TABELA_FORN.items():
         if _norm_vendor(k) == norm_entrada:
+            _aprender_vendor(nome_extraido, v)
             return v
     # 2. Tabela Forn — substring normalizada
     for k, v in _TABELA_FORN.items():
         norm_k = _norm_vendor(k)
         if norm_k and norm_entrada and (norm_k in norm_entrada or norm_entrada in norm_k):
+            _aprender_vendor(nome_extraido, v)
             return v
     # 3. Tabela Forn — palavras significativas com score ≥ 50%
     palavras_entrada = _palavras_sig(nome_extraido.lower().strip())
@@ -196,6 +198,8 @@ def _lookup_fornecedor_eco(nome_extraido: str) -> str:
         if score > melhor_score:
             melhor_score = score
             melhor_v = v
+    if melhor_v and melhor_score >= 0.5:
+        _aprender_vendor(nome_extraido, melhor_v)
     return melhor_v if melhor_score >= 0.5 else ""
 
 

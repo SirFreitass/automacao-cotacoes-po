@@ -6,7 +6,7 @@ Compara cotações entre fornecedores e valida a PO contra o fornecedor escolhid
 import re
 from datetime import date, timedelta
 
-from utils import norm_pn as _norm_pn
+from utils import norm_pn as _norm_pn, aprender_vendor as _aprender_vendor
 
 
 def _parse_data(s) -> date | None:
@@ -205,6 +205,9 @@ def analisar(dados_cotacao: dict, dados_po: dict) -> dict:
     # ── Fornecedor resolvido — UMA única vez, propagado a todos os módulos ──
     if referencia:
         resultado["fornecedor_resolvido"] = referencia.get("nome")
+        # Aprende mapeamento fornecedor comentário → nome na cotação
+        if forn_comentario and referencia.get("nome"):
+            _aprender_vendor(forn_comentario, referencia.get("nome"))
     elif forn_comentario:
         resultado["fornecedor_resolvido"] = po.get("fornecedor_escolhido_comentario")
     if not referencia:

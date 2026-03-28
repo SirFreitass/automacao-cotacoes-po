@@ -45,6 +45,37 @@ from excel_exporter import exportar_excel
 # Helpers
 # =====================================================================
 
+def _limpar_pastas_antigas(pasta_pai: str, prefixo: str, manter: int):
+    """Remove as subpastas mais antigas com o prefixo dado, mantendo apenas as `manter` mais recentes."""
+    import shutil
+    try:
+        paths = sorted(
+            e.path for e in os.scandir(pasta_pai)
+            if e.is_dir() and e.name.startswith(prefixo)
+        )
+        excluir = len(paths) - manter
+        for i, path in enumerate(paths):
+            if i < excluir:
+                shutil.rmtree(path, ignore_errors=True)
+    except Exception:
+        pass
+
+
+def _limpar_logs_antigos(pasta: str, prefixo: str, manter: int):
+    """Remove os arquivos de log mais antigos com o prefixo dado, mantendo apenas os `manter` mais recentes."""
+    try:
+        paths = sorted(
+            e.path for e in os.scandir(pasta)
+            if e.is_file() and e.name.startswith(prefixo)
+        )
+        excluir = len(paths) - manter
+        for i, path in enumerate(paths):
+            if i < excluir:
+                os.remove(path)
+    except Exception:
+        pass
+
+
 def _extrair_req_do_nome(caminho: str):
     """Extrai o Nº ECO REQ do nome do arquivo. Ex: 'Cotação REQ 031326015461' → '031326015461'"""
     nome = os.path.basename(caminho)
@@ -59,22 +90,29 @@ def _e_po(caminho: str) -> bool:
     """
     nome = os.path.basename(caminho).lower()
 
-    # Indicadores de PO no nome
-    PO_NOME = (
-        "purchase order", "ordem de compra",
-        "- eco", "_eco",
+    # Indicadores explícitos de PO têm prioridade máxima (antes do código de cotação)
+    po_explicito = (
+        bool(re.match(r'^po[\s\-_]', nome))           # começa com "PO "
+        or bool(re.search(r'[\s\-_]po[\s\-_\.]', nome))  # contém "- PO " / " PO."
+        or bool(re.search(r'[\s\-_]po$', nome))           # termina com "- PO"
+        or "purchase order" in nome
+        or "ordem de compra" in nome
+        or "- eco" in nome
+        or "_eco" in nome
     )
-    # Indicadores de cotação no nome (para desambiguar)
+    if po_explicito:
+        return True
+
+    # Indicadores de cotação no nome
     COT_NOME = (
         "quote", "quotation", "cotac", "cotaç", "proposta", "proposal",
         "price list", "oferta",
     )
-
-    if re.match(r'^po[\s\-_]', nome):
-        return True
-    if any(p in nome for p in PO_NOME):
-        return True
     if any(p in nome for p in COT_NOME):
+        return False
+
+    # Código de cotação no nome (20XX.XXXXXX) → cotação (só chega aqui se não tem marcador de PO)
+    if re.search(r'202[4-9]\.\d{6,}', nome):
         return False
 
     # Nome ambíguo → escaneia a 1ª página do PDF
@@ -803,11 +841,14 @@ class App(tk.Tk):
         lote = []
         erros = []
 
-        # Pasta de cache: mesma pasta de saída + subpasta com timestamp do lote
+        # Pasta de cache: subpasta cache/ dentro da pasta de saída, máximo 3 mantidos
         pasta_saida = self._pasta_saida.get()
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        pasta_cache = os.path.join(pasta_saida, f"cache_{timestamp}")
+        pasta_cache_raiz = os.path.join(pasta_saida, "cache")
+        os.makedirs(pasta_cache_raiz, exist_ok=True)
+        pasta_cache = os.path.join(pasta_cache_raiz, f"cache_{timestamp}")
         os.makedirs(pasta_cache, exist_ok=True)
+        _limpar_pastas_antigas(pasta_cache_raiz, prefixo="cache_", manter=3)
 
         for i, (caminho_cotacao, caminho_po) in enumerate(self._fila):
             nome = f"Par {i + 1}/{len(self._fila)}"
@@ -1003,12 +1044,15 @@ class App(tk.Tk):
                 linha += f" | {msg}"
             linhas_log.append(linha)
 
-        # Grava o log na pasta do projeto
-        pasta_log = os.path.dirname(os.path.abspath(__file__))
-        caminho_log = os.path.join(pasta_log, f"Log_POs_{agora}.txt")
+        # Grava o log na subpasta logs/, mantendo apenas os 5 mais recentes
+        pasta_projeto = os.path.dirname(os.path.abspath(__file__))
+        pasta_logs = os.path.join(pasta_projeto, "logs")
+        os.makedirs(pasta_logs, exist_ok=True)
+        caminho_log = os.path.join(pasta_logs, f"Log_POs_{agora}.txt")
         try:
             with open(caminho_log, "w", encoding="utf-8") as f:
                 f.write("\n".join(linhas_log))
+            _limpar_logs_antigos(pasta_logs, prefixo="Log_POs_", manter=5)
             os.startfile(caminho_log)   # abre automaticamente no Bloco de Notas
         except Exception:
             pass  # se falhar ao abrir, não bloqueia

@@ -343,7 +343,13 @@ def _chamar_gemini(caminho_pdf: str, prompt: str, tentativas: int = 3,
     texto = re.sub(r"^```(?:json)?\s*", "", texto)
     texto = re.sub(r"\s*```$", "", texto)
 
-    return json.loads(texto)
+    resultado = json.loads(texto)
+
+    # Gemini às vezes retorna um array em vez de um objeto — normaliza para dict
+    if isinstance(resultado, list):
+        resultado = resultado[0] if resultado else {}
+
+    return resultado
 
 
 FREIGHT_VALIDOS = {"Supplier Ship", "Free Delivery", "Runner Pick up", "UPS Account"}

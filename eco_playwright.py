@@ -255,25 +255,27 @@ async def _criar_po_par(page, par: dict, vessels: dict, confirmar, escolher, ven
 
         # ── E2. Approve → Checkout → Order (estado dinâmico da requisição) ──────
         # Fluxo: Approve (se visível) → reload → Checkout (se visível) → Order
-        approve_btn  = page.locator("button.blu.card-1:has-text('Approve')")
-        checkout_btn = page.locator("button:text-is('Check out')")
+        approve_btn = page.locator("button.blu.card-1:has-text('Approve')")
 
         # Passo 1: Approve (se disponível)
         try:
-            await approve_btn.wait_for(state="attached", timeout=3000)
+            await approve_btn.wait_for(state="visible", timeout=3000)
             await approve_btn.scroll_into_view_if_needed()
             await page.wait_for_timeout(500)
             await approve_btn.click()
-            await page.wait_for_timeout(2000)
+            await page.wait_for_timeout(3000)
             await page.reload()
-            # Após reload, aguarda Checkout aparecer (até 10s)
-            await checkout_btn.wait_for(state="attached", timeout=10000)
+            await page.wait_for_load_state("domcontentloaded")
+            await page.wait_for_timeout(2000)  # aguarda Angular re-renderizar
         except Exception:
             pass  # Sem Approve ou já aprovado — verifica Checkout diretamente
 
         # Passo 2: Checkout (se disponível — seja após Approve ou já estava)
+        # get_by_role é mais robusto com Angular Material (texto dentro de <span>)
+        # Evita clicar em "Uncheck out" pois exige nome exato "Check out"
         try:
-            await checkout_btn.wait_for(state="attached", timeout=5000)
+            checkout_btn = page.get_by_role("button", name="Check out", exact=True)
+            await checkout_btn.wait_for(state="visible", timeout=12000)
             await checkout_btn.scroll_into_view_if_needed()
             await page.wait_for_timeout(500)
             await checkout_btn.click()
